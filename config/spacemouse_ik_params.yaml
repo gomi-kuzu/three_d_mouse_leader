@@ -1,0 +1,41 @@
+# SpaceMouse IK ノード デフォルトパラメータ
+# launch 時の引数で上書き可能。
+# ここでは参照用にデフォルト値を記載しています。
+
+spacemouse_ik_node:
+  ros__parameters:
+    # SO-ARM101 URDF ファイルパス
+    # パッケージ内の urdf/ ディレクトリに配置した URDF を使用する場合は
+    # launch ファイルの default_urdf が自動的に設定します。
+    # 手動で上書きしたい場合はこのパラメータを設定してください。
+    # urdf_path: "/home/user/my_robot/so101_new_calib.urdf"
+
+    # 制御周波数 [Hz]
+    control_frequency: 30.0
+
+    # SpaceMouse 並進ゲイン [m/s per unit]
+    lin_gain_x: 0.10
+    lin_gain_y: 0.10
+    lin_gain_z: 0.10
+
+    # SpaceMouse 回転ゲイン [rad/s per unit]
+    rot_gain_roll:  0.30
+    rot_gain_pitch: 0.30
+    rot_gain_yaw:   0.30
+
+    # 不感帯 (|value| < deadzone → 0 として扱う)
+    deadzone: 0.02
+
+    # 初期関節角 [degree], カンマ区切り
+    # 順序: shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll
+    init_joint_positions: "0,-45,90,-45,0"
+
+    # グリッパー初期角 [degree]
+    gripper_init_deg: 0.0
+
+    # 制御対象の URDF 関節名 (カンマ区切り)
+    joint_names_so101: "shoulder_pan,shoulder_lift,elbow_flex,wrist_flex,wrist_roll"
+
+    # SpaceMouse デバイスパス (空文字列 = 自動検出)
+    # 特定デバイスを使う場合: "/dev/hidraw0"
+    device_path: ""
