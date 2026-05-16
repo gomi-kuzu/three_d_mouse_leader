@@ -448,8 +448,11 @@ class SpaceMouseIKNode(Node):
         vx = self._apply_deadzone(sm.x) * self._lin_gains[0]
         vy = self._apply_deadzone(sm.y) * self._lin_gains[1]
         vz = self._apply_deadzone(sm.z) * self._lin_gains[2]
-        wx = self._apply_deadzone(sm.roll)  * self._rot_gains[0]
-        wy = self._apply_deadzone(sm.pitch) * self._rot_gains[1]
+        # pyspacemouse の roll → ロボット Y 軸回転 (wy)
+        # pyspacemouse の pitch → ロボット X 軸回転 (wx)
+        # pyspacemouse の yaw → ロボット Z 軸回転 (wz, 右ねじ補正で符号反転)
+        wx = self._apply_deadzone(sm.pitch) * self._rot_gains[0]
+        wy = self._apply_deadzone(sm.roll)  * self._rot_gains[1]
         wz = -self._apply_deadzone(sm.yaw)  * self._rot_gains[2]  # SpaceMouse Yaw 符号反転 (右ねじ正方向に補正)
 
         task_vel = np.array([vx, vy, vz, wx, wy, wz], dtype=np.float64)
@@ -552,11 +555,11 @@ class SpaceMouseIKNode(Node):
     ):
         """SpaceMouse の入力をグリッパ座標系上の矢印として配信する。
 
-        並進 (XYZ): オレンジの矢印 (gripper_frame_link の各軸方向)
-        回転 (Rx/Ry/Rz): 紫の矢印 (各回転軸に直交する接線方向)
-            Rx (roll)  → 接線方向 = -Y
-            Ry (pitch) → 接線方向 = +X
-            Rz (yaw)   → 接線方向 = +Y  ※ただし Z×X = Y
+        並進 (XYZ): オレンジの矢印 (gripper_frame_link の各軸方向、並進速度方向)
+        回転 (Rx/Ry/Rz): 紫の矢印 (角速度ベクトル方向、IK 指令と符号一致)
+            roll  → +Y 方向 (pyspacemouse の roll は Y 軸回転に対応)
+            pitch → +X 方向 (pyspacemouse の pitch は X 軸回転に対応)
+            yaw   → +Z 方向 (IK での符号反転 -sm.yaw に合わせ反転済み)
         矢印の長さは入力値に比例 (最大 ARROW_SCALE m)。
         """
         ARROW_SCALE = 0.08   # 入力 1.0 に対応する矢印長 [m]
@@ -612,14 +615,13 @@ class SpaceMouseIKNode(Node):
             )
             mid += 1
 
-        # ── 回転矢印 (紫, 接線方向) ───────────────────────────────────────────
-        # Rx (roll, X軸回転)  → 接線 = X × Z = -Y
-        # Ry (pitch, Y軸回転) → 接線 = Y × Z =  X (右手系: Y×Z = X)
-        # Rz (yaw,  Z軸回転)  → 接線 = Z × X =  Y
+        # ── 回転矢印 (紫, 回転軸方向 = 角速度ベクトル方向) ──────────────────────
+        # pyspacemouse roll → ロボット Y 軸回転, pitch → ロボット X 軸回転
+        # yaw は IK で符号反転済み (-sm.yaw) のため矢印も反転
         for val, direction, label in [
-            (iroll,  ( 0, -1, 0), "rot_x"),
-            (ipitch, ( 1,  0, 0), "rot_y"),
-            (iyaw,   ( 0,  1, 0), "rot_z"),
+            (iroll,  (0, 1, 0), "rot_x"),   # roll  → +Y 軸方向
+            (ipitch, (1, 0, 0), "rot_y"),   # pitch → +X 軸方向
+            (-iyaw,  (0, 0, 1), "rot_z"),   # yaw   → +Z (符号反転で IK と一致)
         ]:
             markers.markers.append(
                 make_arrow(frame, direction, val, purple, label, mid)
