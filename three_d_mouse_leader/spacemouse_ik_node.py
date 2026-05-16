@@ -46,6 +46,7 @@ from sensor_msgs.msg import JointState
 from std_msgs.msg import Header, ColorRGBA
 from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker, MarkerArray
+from geometry_msgs.msg import TwistStamped
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -180,6 +181,8 @@ class SpaceMouseIKNode(Node):
         self.declare_parameter("enable_trail", False)
         # 手先球マーカー表示
         self.declare_parameter("enable_ee_sphere", True)
+        # 手先姿勢表示 (RGB 軸矢印)
+        self.declare_parameter("enable_ee_axes", True)
         # SpaceMouse 入力方向矢印表示
         self.declare_parameter("enable_input_arrows", True)
 
@@ -216,6 +219,7 @@ class SpaceMouseIKNode(Node):
         self._use_gripper_tip_ee: bool = self.get_parameter("use_gripper_tip_ee").value
         self._enable_trail: bool = self.get_parameter("enable_trail").value
         self._enable_ee_sphere: bool = self.get_parameter("enable_ee_sphere").value
+        self._enable_ee_axes:   bool = self.get_parameter("enable_ee_axes").value
         self._enable_input_arrows: bool = self.get_parameter("enable_input_arrows").value
 
         # ── 状態変数 ─────────────────────────────────────────────────────────
@@ -313,6 +317,10 @@ class SpaceMouseIKNode(Node):
         )
         self._input_arrow_pub = self.create_publisher(
             MarkerArray, "/ik_debug/input_arrows", marker_qos
+        )
+        # SpaceMouse 生入力 (デバッグ用)
+        self._sm_raw_pub = self.create_publisher(
+            TwistStamped, "/spacemouse/raw", marker_qos
         )
         # 軌跡バッファ (最大 500 点)
         self._trail_points: list = []
@@ -442,9 +450,21 @@ class SpaceMouseIKNode(Node):
         vz = self._apply_deadzone(sm.z) * self._lin_gains[2]
         wx = self._apply_deadzone(sm.roll)  * self._rot_gains[0]
         wy = self._apply_deadzone(sm.pitch) * self._rot_gains[1]
-        wz = self._apply_deadzone(sm.yaw)   * self._rot_gains[2]
+        wz = -self._apply_deadzone(sm.yaw)  * self._rot_gains[2]  # SpaceMouse Yaw 符号反転 (右ねじ正方向に補正)
 
         task_vel = np.array([vx, vy, vz, wx, wy, wz], dtype=np.float64)
+
+        # SpaceMouse 生入力を配信 (常時)
+        raw_msg = TwistStamped()
+        raw_msg.header.stamp = self.get_clock().now().to_msg()
+        raw_msg.header.frame_id = ""
+        raw_msg.twist.linear.x  = float(sm.x)
+        raw_msg.twist.linear.y  = float(sm.y)
+        raw_msg.twist.linear.z  = float(sm.z)
+        raw_msg.twist.angular.x = float(sm.roll)
+        raw_msg.twist.angular.y = float(sm.pitch)
+        raw_msg.twist.angular.z = float(sm.yaw)
+        self._sm_raw_pub.publish(raw_msg)
 
         # SpaceMouse 入力矢印を配信
         if self._enable_input_arrows:
@@ -628,7 +648,36 @@ class SpaceMouseIKNode(Node):
             sphere.scale.x = sphere.scale.y = sphere.scale.z = 0.02
             sphere.color = ColorRGBA(r=1.0, g=0.2, b=0.2, a=0.9)
             markers.markers.append(sphere)
-
+        # ── 軸矢印 (RGB, gripper_frame_link 座標系 = EE 姿勢) ────────────
+        if self._enable_ee_axes:
+            AXIS_LEN  = 0.05   # 軸の長さ [m]
+            SHAFT_D   = 0.003  # 軸輸径
+            HEAD_D    = 0.008  # 矢印頭径
+            axis_defs = [
+                (1, (1, 0, 0), ColorRGBA(r=1.0, g=0.1, b=0.1, a=1.0)),  # X 赤
+                (2, (0, 1, 0), ColorRGBA(r=0.1, g=1.0, b=0.1, a=1.0)),  # Y 緑
+                (3, (0, 0, 1), ColorRGBA(r=0.1, g=0.1, b=1.0, a=1.0)),  # Z 青
+            ]
+            for mid, (axis_id, direction, color) in enumerate(axis_defs):
+                a = Marker()
+                a.header.frame_id = "gripper_frame_link"
+                a.header.stamp = stamp
+                a.ns = "ee_axes"
+                a.id = axis_id
+                a.type = Marker.ARROW
+                a.action = Marker.ADD
+                tail = Point(x=0.0, y=0.0, z=0.0)
+                head = Point(
+                    x=direction[0] * AXIS_LEN,
+                    y=direction[1] * AXIS_LEN,
+                    z=direction[2] * AXIS_LEN,
+                )
+                a.points = [tail, head]
+                a.scale.x = SHAFT_D
+                a.scale.y = HEAD_D
+                a.scale.z = 0.0
+                a.color = color
+                markers.markers.append(a)
         # ── 軌跡 (LINE_STRIP, base_link 座標系で蓄積、FK が必要) ─────────────
         if self._enable_trail:
             import jax.numpy as jnp

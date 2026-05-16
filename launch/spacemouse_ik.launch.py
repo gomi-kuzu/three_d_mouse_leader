@@ -123,6 +123,11 @@ def generate_launch_description():
             description='手先球マーカーを Rviz に表示するか否か',
         ),
         DeclareLaunchArgument(
+            'enable_ee_axes',
+            default_value='true',
+            description='手先姿勢を RGB 軸矢印で Rviz に表示するか否か',
+        ),
+        DeclareLaunchArgument(
             'enable_input_arrows',
             default_value='false',
             description='SpaceMouse 入力方向矢印を Rviz に表示するか否か',
@@ -192,6 +197,7 @@ def generate_launch_description():
             'joint_names_so101':   LaunchConfiguration('joint_names_so101'),
             'enable_trail':        LaunchConfiguration('enable_trail'),
             'enable_ee_sphere':    LaunchConfiguration('enable_ee_sphere'),
+            'enable_ee_axes':      LaunchConfiguration('enable_ee_axes'),
             'enable_input_arrows': LaunchConfiguration('enable_input_arrows'),
         }],
     )
