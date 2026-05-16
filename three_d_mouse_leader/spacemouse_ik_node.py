@@ -30,6 +30,9 @@ Parameters:
   joint_names_so101  (str)   : 制御対象の関節名 (カンマ区切り)
                                例: "shoulder_pan,shoulder_lift,elbow_flex,wrist_flex,wrist_roll"
   device_path        (str)   : SpaceMouse デバイスパス (例: /dev/hidraw0). 空の場合は自動検出
+  velocity_frame     (str)   : 手先速度指令の基準座標系
+                               "world" (デフォルト) : base_link 座標系 (従来動作)
+                               "ee"                 : gripper_frame_link 座標系 (直感的操作)
 
 """
 
@@ -185,6 +188,12 @@ class SpaceMouseIKNode(Node):
         self.declare_parameter("enable_ee_axes", True)
         # SpaceMouse 入力方向矢印表示
         self.declare_parameter("enable_input_arrows", True)
+        # 手先速度指令の基準座標系: "world" = base_link 系, "ee" = 手先座標系
+        self.declare_parameter("velocity_frame", "world")
+        # タスク空間重み: 位置 (XYZ) と姿勢 (Rx/Ry/Rz) の相対重み
+        # 位置を優先したい場合は task_weight_pos を大きく、task_weight_rot を小さくする
+        self.declare_parameter("task_weight_pos", 1.0)
+        self.declare_parameter("task_weight_rot", 0.3)
 
         # ── パラメータ取得 ────────────────────────────────────────────────────
         self._urdf_path: str = self.get_parameter("urdf_path").value
@@ -221,6 +230,14 @@ class SpaceMouseIKNode(Node):
         self._enable_ee_sphere: bool = self.get_parameter("enable_ee_sphere").value
         self._enable_ee_axes:   bool = self.get_parameter("enable_ee_axes").value
         self._enable_input_arrows: bool = self.get_parameter("enable_input_arrows").value
+        self._velocity_frame: str = self.get_parameter("velocity_frame").value.lower()
+        self._task_weight_pos: float = self.get_parameter("task_weight_pos").value
+        self._task_weight_rot: float = self.get_parameter("task_weight_rot").value
+        if self._velocity_frame not in ("world", "ee"):
+            self.get_logger().warn(
+                f"velocity_frame='{self._velocity_frame}' は無効です。'world' にフォールバックします。"
+            )
+            self._velocity_frame = "world"
 
         # ── 状態変数 ─────────────────────────────────────────────────────────
         self._q: np.ndarray = self._init_q.copy()         # 積分済み関節角 [rad]
@@ -271,25 +288,49 @@ class SpaceMouseIKNode(Node):
         jax.config.update("jax_enable_x64", True)
         jax.config.update("jax_platforms", "cpu")
 
+        # タスク空間重み行列 W = diag(wp, wp, wp, wr, wr, wr)
+        # 重み付き擬似逆行列: (W^1/2 J)^+ W^1/2 で位置/姿勢の優先度を調整
+        _w_diag = jnp.array([
+            self._task_weight_pos, self._task_weight_pos, self._task_weight_pos,
+            self._task_weight_rot, self._task_weight_rot, self._task_weight_rot,
+        ], dtype=jnp.float64)
+        _W_sqrt = jnp.diag(jnp.sqrt(_w_diag))
+
         @jax.jit
         def _diff_ik_step(q_full, task_vel):
             J, _ = self._robot.velocity_control_matrices(q_full)
             J_ctrl = J[:, jnp.array(self._frax_indices)]
-            J_pinv = jnp.linalg.pinv(J_ctrl)
-            qd = J_pinv @ task_vel
+            # 重み付き擬似逆行列: minimize ||q_dot||^2 s.t. W^(1/2) J q_dot = W^(1/2) x_dot
+            J_w = _W_sqrt @ J_ctrl          # (6, n_ctrl)
+            J_w_pinv = jnp.linalg.pinv(J_w) # (n_ctrl, 6)
+            qd = J_w_pinv @ (_W_sqrt @ task_vel)
             max_vel = jnp.asarray(
                 [self._robot.joint_max_velocities[i] for i in self._frax_indices]
             )
             qd = jnp.clip(qd, -max_vel, max_vel)
             return qd
 
+        # EE フレーム制御用: FK で EE 姿勢 (T_ee) を取得する JIT 関数
+        @jax.jit
+        def _get_ee_transform(q_full):
+            """FK: EE のホモジーニアス変換行列 (world frame) を返す。"""
+            _, T_ee = self._robot.velocity_control_matrices(q_full)
+            return T_ee
+
         # ウォームアップ
         _diff_ik_step(
             jnp.array(self._q_full, dtype=jnp.float64),
             jnp.zeros(6, dtype=jnp.float64),
         ).block_until_ready()
+        _get_ee_transform(
+            jnp.array(self._q_full, dtype=jnp.float64),
+        ).block_until_ready()
         self._diff_ik_step = _diff_ik_step
-        self.get_logger().info("JIT コンパイル完了。")
+        self._get_ee_transform = _get_ee_transform
+        self.get_logger().info(
+            f"JIT コンパイル完了。velocity_frame='{self._velocity_frame}', "
+            f"task_weight_pos={self._task_weight_pos}, task_weight_rot={self._task_weight_rot}"
+        )
 
         # ── QoS ───────────────────────────────────────────────────────────────
         qos = QoSProfile(
@@ -457,6 +498,28 @@ class SpaceMouseIKNode(Node):
 
         task_vel = np.array([vx, vy, vz, wx, wy, wz], dtype=np.float64)
 
+        # ── EE フレーム → ワールドフレーム変換 ───────────────────────────────
+        # velocity_frame=="ee" のとき、SpaceMouse 入力を手先座標系として解釈し
+        # ワールド座標系の速度指令に変換する (J は world frame で定義されているため)。
+        if self._velocity_frame == "ee":
+            with self._q_lock:
+                q_full_for_fk = self._q_full.copy()
+            try:
+                T_ee = np.asarray(
+                    self._get_ee_transform(
+                        jnp.array(q_full_for_fk, dtype=jnp.float64)
+                    )
+                )
+                R_ee = T_ee[:3, :3]  # world ← EE 回転行列
+                task_vel = np.concatenate([
+                    R_ee @ task_vel[:3],
+                    R_ee @ task_vel[3:],
+                ])
+            except Exception as e:
+                self.get_logger().warn(
+                    f"EE フレーム変換エラー: {e}", throttle_duration_sec=1.0
+                )
+
         # SpaceMouse 生入力を配信 (常時)
         raw_msg = TwistStamped()
         raw_msg.header.stamp = self.get_clock().now().to_msg()
@@ -475,6 +538,7 @@ class SpaceMouseIKNode(Node):
                 self.get_clock().now().to_msg(),
                 sm.x, sm.y, sm.z,
                 sm.roll, sm.pitch, sm.yaw,
+                use_ee_frame=(self._velocity_frame == "ee"),
             )
 
         # ゼロ速度ならスキップ (位置を保持)
@@ -552,14 +616,14 @@ class SpaceMouseIKNode(Node):
     def _publish_input_arrows(
         self, stamp, ix: float, iy: float, iz: float,
         iroll: float, ipitch: float, iyaw: float,
+        use_ee_frame: bool = False,
     ):
-        """SpaceMouse の入力をグリッパ座標系上の矢印として配信する。
+        """SpaceMouse の入力を矢印として配信する。
 
-        並進 (XYZ): オレンジの矢印 (gripper_frame_link の各軸方向、並進速度方向)
-        回転 (Rx/Ry/Rz): 紫の矢印 (角速度ベクトル方向、IK 指令と符号一致)
-            roll  → +Y 方向 (pyspacemouse の roll は Y 軸回転に対応)
-            pitch → +X 方向 (pyspacemouse の pitch は X 軸回転に対応)
-            yaw   → +Z 方向 (IK での符号反転 -sm.yaw に合わせ反転済み)
+        use_ee_frame=True  : gripper_frame_link 座標系に描画 (手先フレームモード)
+        use_ee_frame=False : base_link 座標系に描画 (ワールドフレームモード)
+        並進 (XYZ): オレンジの矢印
+        回転 (Rx/Ry/Rz): 紫の矢印 (IK 指令と符号一致)
         矢印の長さは入力値に比例 (最大 ARROW_SCALE m)。
         """
         ARROW_SCALE = 0.08   # 入力 1.0 に対応する矢印長 [m]
@@ -601,10 +665,12 @@ class SpaceMouseIKNode(Node):
             m.color = color
             return m
 
-        frame = "gripper_frame_link"
+        # velocity_frame に合わせて描画フレームを選択
+        # ee モード: gripper_frame_link 上に描くと「手先座標系での入力方向」が直感的
+        # world モード: base_link 上に描くとワールド軸に沿った動きと一致
+        frame = "gripper_frame_link" if use_ee_frame else "base_link"
 
         # ── 並進矢印 (オレンジ) ───────────────────────────────────────────────
-        # gripper_frame_link の X/Y/Z 軸方向にそのまま伸ばす
         for val, direction, label in [
             (ix,    (1, 0, 0), "lin_x"),
             (iy,    (0, 1, 0), "lin_y"),

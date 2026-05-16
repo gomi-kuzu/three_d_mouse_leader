@@ -15,6 +15,7 @@
     init_joint_positions   : 初期関節角 degree, カンマ区切り (例: "0,-45,90,-45,0")
     device_path            : SpaceMouse デバイスパス (空 = 自動検出)
     gripper_init_deg       : グリッパー初期角 [degree] (デフォルト 0.0)
+    velocity_frame         : 手先速度指令の基準座標系 "world" / "ee" (デフォルト "world")
 """
 
 import launch
@@ -132,6 +133,11 @@ def generate_launch_description():
             default_value='false',
             description='SpaceMouse 入力方向矢印を Rviz に表示するか否か',
         ),
+        DeclareLaunchArgument(
+            'velocity_frame',
+            default_value='world',
+            description='手先速度指令の基準座標系: "world" = base_link 系, "ee" = 手先座標系',
+        ),
     ]
 
     # ── robot_state_publisher ───────────────────────────────────────────────
@@ -198,8 +204,7 @@ def generate_launch_description():
             'enable_trail':        LaunchConfiguration('enable_trail'),
             'enable_ee_sphere':    LaunchConfiguration('enable_ee_sphere'),
             'enable_ee_axes':      LaunchConfiguration('enable_ee_axes'),
-            'enable_input_arrows': LaunchConfiguration('enable_input_arrows'),
-        }],
+            'enable_input_arrows': LaunchConfiguration('enable_input_arrows'),            'velocity_frame':      LaunchConfiguration('velocity_frame'),        }],
     )
 
     return launch.LaunchDescription(args + [
