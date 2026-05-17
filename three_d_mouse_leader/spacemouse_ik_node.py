@@ -178,6 +178,11 @@ class SpaceMouseIKNode(Node):
         self.declare_parameter("device_path", "")
         # グリッパー初期角 [degree]
         self.declare_parameter("gripper_init_deg", 0.0)
+        # グリッパー開閉角度リミット [degree]
+        self.declare_parameter("gripper_min_deg", -10.0)
+        self.declare_parameter("gripper_max_deg",  100.0)
+        # グリッパー開閉速度 [degree/s] (ボタン押下時)
+        self.declare_parameter("gripper_speed_dps", 40.0)
         # EE 座標系選択: True=グリッパ先端, False=手首ロール後の付け根
         self.declare_parameter("use_gripper_tip_ee", True)
         # 手先軌跡表示
@@ -225,6 +230,9 @@ class SpaceMouseIKNode(Node):
         self._gripper_pos: float = math.radians(
             self.get_parameter("gripper_init_deg").value
         )
+        self._gripper_min: float = math.radians(self.get_parameter("gripper_min_deg").value)
+        self._gripper_max: float = math.radians(self.get_parameter("gripper_max_deg").value)
+        self._gripper_speed: float = math.radians(self.get_parameter("gripper_speed_dps").value)
         self._use_gripper_tip_ee: bool = self.get_parameter("use_gripper_tip_ee").value
         self._enable_trail: bool = self.get_parameter("enable_trail").value
         self._enable_ee_sphere: bool = self.get_parameter("enable_ee_sphere").value
@@ -245,6 +253,8 @@ class SpaceMouseIKNode(Node):
         self._current_q: Optional[np.ndarray] = None      # 最新の実測関節角
         self._sm_state = None                              # SpaceMouse 状態
         self._sm_lock = threading.Lock()
+        self._button_states: List[bool] = []               # SpaceMouse ボタン状態
+        self._buttons_lock = threading.Lock()
         self._debug_frame_count: int = 0                  # デバッグ出力用カウンタ
 
         # ── frax ロボットモデル読み込み ───────────────────────────────────────
@@ -424,13 +434,20 @@ class SpaceMouseIKNode(Node):
         """バックグラウンドで SpaceMouse を連続読み取りするスレッド関数。"""
         import pyspacemouse
 
+        def _button_cb(state, buttons):
+            """ボタン状態変化コールバック。スレッドセーフに状態を更新する。"""
+            with self._buttons_lock:
+                self._button_states = [bool(b) for b in buttons]
+
         device = None
         while rclpy.ok():
             try:
                 if self._device_path:
-                    device = pyspacemouse.open_by_path(self._device_path)
+                    device = pyspacemouse.open_by_path(
+                        self._device_path, button_callback=_button_cb
+                    )
                 else:
-                    device = pyspacemouse.open()
+                    device = pyspacemouse.open(button_callback=_button_cb)
                 self.get_logger().info(
                     f"SpaceMouse 接続: {device.name}"
                 )
@@ -482,6 +499,19 @@ class SpaceMouseIKNode(Node):
             # まだ SpaceMouse が繋がっていない場合は現在位置を保持
             self._publish_commands()
             return
+
+        # ── グリッパー制御 (ボタン押下) ───────────────────────────────────────
+        # ボタン 0 + ボタン 1 同時押し → 閉じる (gripper_min_deg でストップ)
+        # ボタン 0 のみ              → 開く   (gripper_max_deg でストップ)
+        with self._buttons_lock:
+            _btns = list(self._button_states)
+        _btn0 = _btns[0] if len(_btns) > 0 else False
+        _btn1 = _btns[1] if len(_btns) > 1 else False
+        _g_step = self._gripper_speed * self._dt
+        if _btn0 and _btn1:
+            self._gripper_pos = max(self._gripper_min, self._gripper_pos - _g_step)
+        elif _btn0:
+            self._gripper_pos = min(self._gripper_max, self._gripper_pos + _g_step)
 
         # ── 手先速度 (task_vel) 計算 ──────────────────────────────────────────
         # SpaceMouse 座標系 → ロボット手先座標系への変換は
