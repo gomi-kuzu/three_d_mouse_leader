@@ -552,9 +552,8 @@ class SpaceMouseIKNode(Node):
 
         # SpaceMouse 入力矢印を配信
         if self._enable_input_arrows:
-            # world フレームモード時: gripper_frame_link を origin とし、
-            # ワールド軸方向を EE 回転行列で逆変換して方向を揃える
-            arrow_rotation: Optional[np.ndarray] = None
+            # world フレームモード時: base_link 座標系での EE 位置を起点に使用
+            arrow_origin: Optional[np.ndarray] = None
             if self._velocity_frame != "ee":
                 try:
                     with self._q_lock:
@@ -564,7 +563,7 @@ class SpaceMouseIKNode(Node):
                             jnp.array(_q_for_arrow, dtype=jnp.float64)
                         )
                     )
-                    arrow_rotation = T_arrow[:3, :3]  # R_ee: world ← EE
+                    arrow_origin = T_arrow[:3, 3]
                 except Exception:
                     pass
             self._publish_input_arrows(
@@ -572,7 +571,7 @@ class SpaceMouseIKNode(Node):
                 sm.x, sm.y, sm.z,
                 sm.roll, sm.pitch, sm.yaw,
                 use_ee_frame=(self._velocity_frame == "ee"),
-                ee_rotation=arrow_rotation,
+                ee_origin=arrow_origin,
             )
 
         # ゼロ速度ならスキップ (位置を保持)
@@ -651,13 +650,12 @@ class SpaceMouseIKNode(Node):
         self, stamp, ix: float, iy: float, iz: float,
         iroll: float, ipitch: float, iyaw: float,
         use_ee_frame: bool = False,
-        ee_rotation: Optional[np.ndarray] = None,
+        ee_origin: Optional[np.ndarray] = None,
     ):
         """SpaceMouse の入力を矢印として配信する。
 
-        常に gripper_frame_link 座標系の原点 (グリッパ先端) に描画する。
-        use_ee_frame=True  : 方向は EE 座標系そのまま (手先フレームモード)
-        use_ee_frame=False : 方向は R_ee.T で変換してワールド軸方向に揃える
+        use_ee_frame=True  : gripper_frame_link 座標系の原点に描画 (手先フレームモード)
+        use_ee_frame=False : base_link 座標系で描画。ee_origin で起点をグリッパ先端に平行移動
         並進 (XYZ): オレンジの矢印
         回転 (Rx/Ry/Rz): 紫の矢印 (IK 指令と符号一致)
         矢印の長さは入力値に比例 (最大 ARROW_SCALE m)。
@@ -672,18 +670,13 @@ class SpaceMouseIKNode(Node):
         markers = MarkerArray()
         mid = 0
 
-        # 常に gripper_frame_link フレームを使用 (TF が正確な原点を提供)
-        # world モード: ワールド軸方向を EE フレーム座標に変換 (R_ee.T @ d_world)
-        # ee モード  : 方向はそのまま EE フレーム座標
-        def _to_ee_dir(d_world):
-            """ワールド軸方向 d_world を gripper_frame_link 座標に変換する。"""
-            if not use_ee_frame and ee_rotation is not None:
-                return tuple(float(v) for v in (ee_rotation.T @ np.array(d_world, dtype=np.float64)))
-            return d_world
+        # world フレームモード時の矢印起点 (base_link 座標系での EE 位置)
+        ox = float(ee_origin[0]) if ee_origin is not None else 0.0
+        oy = float(ee_origin[1]) if ee_origin is not None else 0.0
+        oz = float(ee_origin[2]) if ee_origin is not None else 0.0
 
         def make_arrow(frame, direction, value, color, ns, mid):
-            """frame 座標系の原点から direction 方向に value スケールの矢印 Marker を返す。"""
-            direction = _to_ee_dir(direction)
+            """frame 座標系で direction 方向に value スケールの矢印 Marker を返す。"""
             length = float(value) * ARROW_SCALE
             if abs(length) < 1e-4:
                 # 非表示 (DELETE)
@@ -701,9 +694,9 @@ class SpaceMouseIKNode(Node):
             m.id = mid
             m.type = Marker.ARROW
             m.action = Marker.ADD
-            tail = Point(x=0.0, y=0.0, z=0.0)
+            tail = Point(x=ox, y=oy, z=oz)
             dx, dy, dz = [c * length for c in direction]
-            head = Point(x=dx, y=dy, z=dz)
+            head = Point(x=ox + dx, y=oy + dy, z=oz + dz)
             m.points = [tail, head]
             m.scale.x = SHAFT_D
             m.scale.y = HEAD_D
@@ -711,9 +704,10 @@ class SpaceMouseIKNode(Node):
             m.color = color
             return m
 
-        # 常に gripper_frame_link フレームに描画 (グリッパ先端が原点)
-        # world / ee どちらのモードも同じフレーム (方向の違いは _to_ee_dir で吸収)
-        frame = "gripper_frame_link"
+        # velocity_frame に合わせて描画フレームを選択
+        # ee モード  : gripper_frame_link 座標系 (EE 周りの方向)
+        # world モード: base_link 座標系 + ee_origin オフセット (位置は EE, 姿勢はワールド固定)
+        frame = "gripper_frame_link" if use_ee_frame else "base_link"
 
         # ── 並進矢印 (オレンジ) ───────────────────────────────────────────────
         for val, direction, label in [
