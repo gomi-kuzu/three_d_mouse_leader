@@ -245,6 +245,7 @@ class SpaceMouseIKNode(Node):
         self._current_q: Optional[np.ndarray] = None      # 最新の実測関節角
         self._sm_state = None                              # SpaceMouse 状態
         self._sm_lock = threading.Lock()
+        self._debug_frame_count: int = 0                  # デバッグ出力用カウンタ
 
         # ── frax ロボットモデル読み込み ───────────────────────────────────────
         if not self._urdf_path:
@@ -511,10 +512,27 @@ class SpaceMouseIKNode(Node):
                     )
                 )
                 R_ee = T_ee[:3, :3]  # world ← EE 回転行列
+                task_vel_ee = task_vel.copy()           # 変換前 (EE フレーム)
                 task_vel = np.concatenate([
                     R_ee @ task_vel[:3],
                     R_ee @ task_vel[3:],
                 ])
+
+                # ── デバッグ出力 (30 フレームに 1 回、入力がある場合のみ) ──
+                self._debug_frame_count += 1
+                if self._debug_frame_count % 30 == 0 and not np.allclose(task_vel_ee[3:], 0.0):
+                    np.set_printoptions(precision=3, suppress=True)
+                    self.get_logger().info(
+                        f"\n[EE mode debug]\n"
+                        f"  q_deg       = {np.round(np.rad2deg(q_full_for_fk[self._frax_indices]), 1)}\n"
+                        f"  R_ee (world←EE):\n"
+                        f"    X_ee in world = {np.round(R_ee[:, 0], 3)}  (EE赤軸)\n"
+                        f"    Y_ee in world = {np.round(R_ee[:, 1], 3)}  (EE緑軸)\n"
+                        f"    Z_ee in world = {np.round(R_ee[:, 2], 3)}  (EE青軸)\n"
+                        f"  omega_EE (指令) = {np.round(task_vel_ee[3:], 4)}\n"
+                        f"  omega_world    = {np.round(task_vel[3:], 4)}"
+                    )
+
             except Exception as e:
                 self.get_logger().warn(
                     f"EE フレーム変換エラー: {e}", throttle_duration_sec=1.0
@@ -534,11 +552,27 @@ class SpaceMouseIKNode(Node):
 
         # SpaceMouse 入力矢印を配信
         if self._enable_input_arrows:
+            # world フレームモード時: gripper_frame_link を origin とし、
+            # ワールド軸方向を EE 回転行列で逆変換して方向を揃える
+            arrow_rotation: Optional[np.ndarray] = None
+            if self._velocity_frame != "ee":
+                try:
+                    with self._q_lock:
+                        _q_for_arrow = self._q_full.copy()
+                    T_arrow = np.asarray(
+                        self._get_ee_transform(
+                            jnp.array(_q_for_arrow, dtype=jnp.float64)
+                        )
+                    )
+                    arrow_rotation = T_arrow[:3, :3]  # R_ee: world ← EE
+                except Exception:
+                    pass
             self._publish_input_arrows(
                 self.get_clock().now().to_msg(),
                 sm.x, sm.y, sm.z,
                 sm.roll, sm.pitch, sm.yaw,
                 use_ee_frame=(self._velocity_frame == "ee"),
+                ee_rotation=arrow_rotation,
             )
 
         # ゼロ速度ならスキップ (位置を保持)
@@ -617,11 +651,13 @@ class SpaceMouseIKNode(Node):
         self, stamp, ix: float, iy: float, iz: float,
         iroll: float, ipitch: float, iyaw: float,
         use_ee_frame: bool = False,
+        ee_rotation: Optional[np.ndarray] = None,
     ):
         """SpaceMouse の入力を矢印として配信する。
 
-        use_ee_frame=True  : gripper_frame_link 座標系に描画 (手先フレームモード)
-        use_ee_frame=False : base_link 座標系に描画 (ワールドフレームモード)
+        常に gripper_frame_link 座標系の原点 (グリッパ先端) に描画する。
+        use_ee_frame=True  : 方向は EE 座標系そのまま (手先フレームモード)
+        use_ee_frame=False : 方向は R_ee.T で変換してワールド軸方向に揃える
         並進 (XYZ): オレンジの矢印
         回転 (Rx/Ry/Rz): 紫の矢印 (IK 指令と符号一致)
         矢印の長さは入力値に比例 (最大 ARROW_SCALE m)。
@@ -636,8 +672,18 @@ class SpaceMouseIKNode(Node):
         markers = MarkerArray()
         mid = 0
 
+        # 常に gripper_frame_link フレームを使用 (TF が正確な原点を提供)
+        # world モード: ワールド軸方向を EE フレーム座標に変換 (R_ee.T @ d_world)
+        # ee モード  : 方向はそのまま EE フレーム座標
+        def _to_ee_dir(d_world):
+            """ワールド軸方向 d_world を gripper_frame_link 座標に変換する。"""
+            if not use_ee_frame and ee_rotation is not None:
+                return tuple(float(v) for v in (ee_rotation.T @ np.array(d_world, dtype=np.float64)))
+            return d_world
+
         def make_arrow(frame, direction, value, color, ns, mid):
-            """frame 座標系で direction 方向に value スケールの矢印 Marker を返す。"""
+            """frame 座標系の原点から direction 方向に value スケールの矢印 Marker を返す。"""
+            direction = _to_ee_dir(direction)
             length = float(value) * ARROW_SCALE
             if abs(length) < 1e-4:
                 # 非表示 (DELETE)
@@ -665,10 +711,9 @@ class SpaceMouseIKNode(Node):
             m.color = color
             return m
 
-        # velocity_frame に合わせて描画フレームを選択
-        # ee モード: gripper_frame_link 上に描くと「手先座標系での入力方向」が直感的
-        # world モード: base_link 上に描くとワールド軸に沿った動きと一致
-        frame = "gripper_frame_link" if use_ee_frame else "base_link"
+        # 常に gripper_frame_link フレームに描画 (グリッパ先端が原点)
+        # world / ee どちらのモードも同じフレーム (方向の違いは _to_ee_dir で吸収)
+        frame = "gripper_frame_link"
 
         # ── 並進矢印 (オレンジ) ───────────────────────────────────────────────
         for val, direction, label in [
