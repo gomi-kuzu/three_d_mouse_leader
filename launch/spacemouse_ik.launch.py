@@ -80,7 +80,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'init_joint_positions',
-            default_value='0,-45,90,-45,0',
+            # default_value='0,-45,90,-45,0',            
+            default_value='0.0,-78.0,82.0,62.0,0.0', #lekiwi home position
             description='初期関節角 [degree], カンマ区切り (shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll)',
         ),
         DeclareLaunchArgument(
