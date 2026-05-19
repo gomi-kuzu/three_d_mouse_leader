@@ -290,6 +290,17 @@ class SpaceMouseIKNode(Node):
         self._q_full: np.ndarray = np.zeros(self._robot.num_joints)
         self._q_full[self._frax_indices] = self._q
 
+        # フィードバック/コマンド単位変換用 URDF 関節リミット (ラジアン)
+        # lekiwi_teleop_node はデフォルト (use_degrees=False) で RANGE_M100_100 単位を使用する。
+        # RANGE_M100_100 の変換式: -100 → lower_limit, +100 → upper_limit
+        # q_rad = (q_range + 100) / 200 * (hi - lo) + lo
+        self._joint_lo: np.ndarray = np.array(
+            [self._robot.joint_lower_limits[i] for i in self._frax_indices]
+        )
+        self._joint_hi: np.ndarray = np.array(
+            [self._robot.joint_upper_limits[i] for i in self._frax_indices]
+        )
+
         # JIT コンパイル (初回呼び出しで実施)
         self.get_logger().info("JIT コンパイル中 (初回のみ時間がかかります)...")
         import jax
@@ -404,8 +415,13 @@ class SpaceMouseIKNode(Node):
     # ── コールバック ──────────────────────────────────────────────────────────
 
     def _joint_state_callback(self, msg: JointState):
-        """/lekiwi/joint_states から現在関節角を取得する。"""
-        # 関節名の順序が固定なら直接インデックスで参照
+        """/lekiwi/joint_states から現在関節角を取得する。
+
+        lekiwi_teleop_node はデフォルト (use_degrees=False) で RANGE_M100_100 単位
+        (-100 〜 +100) を配信する。frax はラジアンを要求するため、URDF 関節リミットを
+        スケールファクタとして変換する。
+          q_rad = (q_range + 100) / 200 * (hi - lo) + lo
+        """
         if len(msg.name) >= self._n_joints:
             target_names = [
                 "arm_shoulder_pan",
@@ -415,19 +431,27 @@ class SpaceMouseIKNode(Node):
                 "arm_wrist_roll",
             ]
             name_to_pos = dict(zip(msg.name, msg.position))
-            q_meas = np.array(
+            q_meas_range = np.array(
                 [name_to_pos.get(n, 0.0) for n in target_names[: self._n_joints]]
+            )
+            # RANGE_M100_100 → ラジアン変換
+            # -100 → joint_lower_limit, +100 → joint_upper_limit (線形補間)
+            q_meas_rad = (
+                (q_meas_range + 100.0) / 200.0
+                * (self._joint_hi - self._joint_lo)
+                + self._joint_lo
             )
             with self._q_lock:
                 is_first = self._current_q is None
-                self._current_q = q_meas
+                self._current_q = q_meas_rad
                 # 積分値を実測値で補正 (ドリフト防止)
-                self._q = q_meas.copy()
+                self._q = q_meas_rad.copy()
                 self._q_full[self._frax_indices] = self._q
-            
+
             if is_first:
                 self.get_logger().info(
-                    f"初回関節角度受信完了。制御準備完了。現在角度: {np.rad2deg(q_meas)}"
+                    f"初回関節角度受信完了。制御準備完了。"
+                    f"現在角度 [deg]: {np.round(np.rad2deg(q_meas_rad), 2)}"
                 )
 
     def _spacemouse_reader(self):
@@ -631,14 +655,8 @@ class SpaceMouseIKNode(Node):
         with self._q_lock:
             new_q = self._q + qd * self._dt
 
-            # 関節上下限でクランプ
-            lo = np.array(
-                [self._robot.joint_lower_limits[i] for i in self._frax_indices]
-            )
-            hi = np.array(
-                [self._robot.joint_upper_limits[i] for i in self._frax_indices]
-            )
-            new_q = np.clip(new_q, lo, hi)
+            # 関節上下限でクランプ (self._joint_lo/hi はラジアン単位でキャッシュ済み)
+            new_q = np.clip(new_q, self._joint_lo, self._joint_hi)
 
             self._q = new_q
             self._q_full[self._frax_indices] = self._q
@@ -646,7 +664,13 @@ class SpaceMouseIKNode(Node):
         self._publish_commands()
 
     def _publish_commands(self):
-        """現在の self._q を /lekiwi/arm_joint_commands に配信する。"""
+        """現在の self._q を /lekiwi/arm_joint_commands に配信する。
+
+        lekiwi_teleop_node はデフォルト (use_degrees=False) で RANGE_M100_100 単位を期待。
+        内部のラジアン値を RANGE_M100_100 に逆変換して配信する。
+          q_range = (q_rad - lo) / (hi - lo) * 200 - 100
+        グリッパーは常に RANGE_0_100: 度単位に変換 (0°≈0%, 100°≈100%)。
+        """
         msg = JointState()
         msg.header = Header()
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -655,8 +679,11 @@ class SpaceMouseIKNode(Node):
         with self._q_lock:
             q = self._q.copy()
 
-        # 5 関節 + gripper
-        positions = list(q) + [self._gripper_pos]
+        # ラジアン → RANGE_M100_100 変換
+        q_range = (q - self._joint_lo) / (self._joint_hi - self._joint_lo) * 200.0 - 100.0
+        # グリッパー: RANGE_0_100 → 度単位で近似 (0° ≈ 0%, 100° ≈ 100%)
+        gripper_range = math.degrees(self._gripper_pos)
+        positions = list(q_range) + [gripper_range]
         # 不足分を 0 で補完 (念のため)
         while len(positions) < len(self._CMD_JOINT_NAMES):
             positions.append(0.0)

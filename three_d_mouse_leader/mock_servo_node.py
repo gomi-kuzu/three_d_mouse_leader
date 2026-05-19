@@ -8,12 +8,17 @@ Mock Servo Node (デバッグ用仮想サーボ)
 
 実機なしで IK ノードと Rviz の動作確認に使用する。
 
+配信単位: RANGE_M100_100 (-100 〜 +100)
+  実機の lekiwi_teleop_node (use_degrees=False) と同じ単位で配信する。
+  init_joint_positions は [degree] で指定する (IKノードと共通パラメータ)。
+  SO-ARM101 の場合 RANGE_M100_100 ≈ degree × 0.95 であるため、
+  度値をそのまま RANGE_M100_100 の近似初期値として使用する (~5% 誤差)。
+
 Parameters:
   init_joint_positions (str)  : 初期関節角 [degree], カンマ区切り (IKノードと同じ値を指定)
   joint_names_cmd (str)       : /lekiwi/arm_joint_commands の関節名 (カンマ区切り)
 """
 
-import math
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
@@ -29,24 +34,24 @@ class MockServoNode(Node):
         "arm_wrist_roll",
         "arm_gripper",
     )
-    _DEFAULT_INIT_DEG = (0.0, -45.0, 90.0, -45.0, 0.0, 0.0)
+    # 初期値は degree 単位で指定 (RANGE_M100_100 の近似値として使用)
+    _DEFAULT_INIT_RANGE = (0.0, -45.0, 90.0, -45.0, 0.0, 0.0)
 
     def __init__(self):
         super().__init__("mock_servo_node")
 
         self.declare_parameter(
             "init_joint_positions",
-            ",".join(str(d) for d in self._DEFAULT_INIT_DEG),
+            ",".join(str(d) for d in self._DEFAULT_INIT_RANGE),
         )
         self.declare_parameter(
             "joint_names_cmd",
             ",".join(self._DEFAULT_CMD_JOINT_NAMES),
         )
 
-        init_deg_str: str = self.get_parameter("init_joint_positions").value
-        self._init_positions = [
-            math.radians(float(v.strip())) for v in init_deg_str.split(",")
-        ]
+        init_str: str = self.get_parameter("init_joint_positions").value
+        # degree 値をそのまま RANGE_M100_100 近似値として使用 (変換なし)
+        self._init_positions = [float(v.strip()) for v in init_str.split(",")]
 
         names_str: str = self.get_parameter("joint_names_cmd").value
         self._joint_names = [n.strip() for n in names_str.split(",")]
@@ -74,7 +79,7 @@ class MockServoNode(Node):
         self._init_timer = self.create_timer(0.1, self._publish_initial)
 
         self.get_logger().info(
-            f"MockServoNode 起動: 初期角 {[round(math.degrees(p), 1) for p in self._init_positions]} [deg]"
+            f"MockServoNode 起動: 初期値 (RANGE_M100_100) {[round(p, 1) for p in self._init_positions]}"
         )
 
     def _publish_initial(self):

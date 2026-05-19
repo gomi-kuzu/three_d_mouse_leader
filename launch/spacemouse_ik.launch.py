@@ -205,7 +205,9 @@ def generate_launch_description():
             'enable_trail':        LaunchConfiguration('enable_trail'),
             'enable_ee_sphere':    LaunchConfiguration('enable_ee_sphere'),
             'enable_ee_axes':      LaunchConfiguration('enable_ee_axes'),
-            'enable_input_arrows': LaunchConfiguration('enable_input_arrows'),            'velocity_frame':      LaunchConfiguration('velocity_frame'),        }],
+            'enable_input_arrows': LaunchConfiguration('enable_input_arrows'),
+            'velocity_frame':      LaunchConfiguration('velocity_frame'),
+        }],
     )
 
     return launch.LaunchDescription(args + [
