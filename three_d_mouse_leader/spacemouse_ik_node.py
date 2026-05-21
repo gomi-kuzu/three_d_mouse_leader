@@ -444,9 +444,10 @@ class SpaceMouseIKNode(Node):
             with self._q_lock:
                 is_first = self._current_q is None
                 self._current_q = q_meas_rad
-                # 積分値を実測値で補正 (ドリフト防止)
-                self._q = q_meas_rad.copy()
-                self._q_full[self._frax_indices] = self._q
+                if is_first:
+                    # 初回受信時のみ積分値を実測値で初期化
+                    self._q = q_meas_rad.copy()
+                    self._q_full[self._frax_indices] = self._q
 
             if is_first:
                 self.get_logger().info(
