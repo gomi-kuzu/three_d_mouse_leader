@@ -139,7 +139,7 @@ gs = gridspec.GridSpec(2, 3, fig,
 
 ax_sv   = fig.add_subplot(gs[0, 0])   # 特異値バーチャート
 ax_ell  = fig.add_subplot(gs[0, 1])   # 可操作度楕円
-ax_ns   = fig.add_subplot(gs[0, 2])   # ヌル空間ベクトル
+ax_ns   = fig.add_subplot(gs[0, 2])   # 最小右特異ベクトル
 ax_mtr  = fig.add_subplot(gs[1, 0])   # メトリクス
 ax_pos  = fig.add_subplot(gs[1, 1])   # 位置部分特異値
 ax_info = fig.add_subplot(gs[1, 2])   # 関節角度 + ソース表示
@@ -205,13 +205,13 @@ def draw_ellipse(ax, a: dict):
            xlabel='X 方向', ylabel='Z 方向')
 
 def draw_nullspace(ax, a: dict):
-    """最小右特異ベクトル (毎フレームクリア)"""
+    """最小右特異ベクトル v5: EE への影響が最も小さい関節方向 (毎フレームクリア)"""
     ax.clear()
     v = a['Vt'][-1, :]
     s_min = a['s'][-1]
     ax.bar(range(NDOF), v, color='#3498db', edgecolor='k', lw=0.3)
     ax.axhline(0, color='k', lw=0.5)
-    ax.set(title=r'ヌル空間方向 ($\sigma_{min}=' + f'{s_min:.4f}' + r'$)' + '\nこの関節方向に動かしても EE が動かない',
+    ax.set(title=r'最小右特異ベクトル $\mathbf{v}_5$ ($\sigma_{min}=' + f'{s_min:.4f}' + r'$)' + '\nこの関節方向は EE への影響が最も小さい',
            xticks=range(NDOF), xticklabels=NAMES, ylabel='成分値')
     ax.set_ylim(-1.15, 1.15)
     ax.grid(axis='y', alpha=0.3)
