@@ -1,7 +1,7 @@
 # 3d_mouse_leader
 
 SpaceMouse (3D マウス) の 6 軸入力を手先速度指令に変換し、
-[frax](https://github.com/danielpmorton/frax) ライブラリを用いた**差分逆運動学 (Differential IK)** によって
+[frax](https://github.com/danielpmorton/frax) ライブラリを用いた**微分逆運動学 (Differential IK)** によって
 SO-ARM101 の 5 軸関節位置指令を生成し、ROS2 トピックに配信するパッケージです。
 
 ---
@@ -100,6 +100,7 @@ ros2 launch three_d_mouse_leader spacemouse_ik.launch.py \
     enable_input_arrows:=true
 ```
 
+<!--
 ### EE 座標系の切り替え
 
 ```bash
@@ -113,6 +114,7 @@ ros2 launch three_d_mouse_leader spacemouse_ik.launch.py use_gripper_tip_ee:=fal
 起動ログに `EE=gripper_frame_link (先端)` または `EE=gripper_link (付け根)` と表示されます。
 
 ### ゲインの調整例
+-->
 
 ```bash
 ros2 launch three_d_mouse_leader spacemouse_ik.launch.py \
