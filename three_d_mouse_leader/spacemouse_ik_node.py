@@ -33,6 +33,16 @@ Parameters:
   velocity_frame     (str)   : 手先速度指令の基準座標系
                                "world" (デフォルト) : base_link 座標系 (従来動作)
                                "ee"                 : gripper_frame_link 座標系 (直感的操作)
+  singularity_avoidance (bool) : 特異点回避を有効にする (デフォルト: True)
+                               True  = DLS (Damped Least Squares) 擬似逆行列を使用
+                               False = 通常の擬似逆行列 (従来動作)
+  variable_damping   (bool)  : 可操作性に基づく可変ダンピングを使用 (singularity_avoidance=True 時)
+                               True  = 可操作性が低い時にダンピングを自動増大
+                               False = 固定ダンピング damping_lambda を使用
+  damping_lambda     (float) : DLS ダンピング係数 (デフォルト: 0.05)
+                               大きいほど特異点で安定するが、追従性能が低下する
+  manipulability_threshold (float) : 可変ダンピング開始閾値 w0 (デフォルト: 0.04)
+                               可操作性 w がこの値を下回ると λ が増大し始める
 
 """
 
@@ -50,6 +60,21 @@ from std_msgs.msg import Header, ColorRGBA
 from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import TwistStamped
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ユーティリティ
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _as_bool(value) -> bool:
+    """ROS2 パラメータの bool 値を安全に変換する。
+
+    launch ファイルから LaunchConfiguration 経由で渡される値は常に文字列になるため、
+    Python の "false" はそのまま bool() にかけると True になる問題を回避する。
+    """
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() not in ('false', '0', 'no', 'off')
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -199,6 +224,11 @@ class SpaceMouseIKNode(Node):
         # 位置を優先したい場合は task_weight_pos を大きく、task_weight_rot を小さくする
         self.declare_parameter("task_weight_pos", 1.0)
         self.declare_parameter("task_weight_rot", 0.3)
+        # 特異点回避 (Damped Least Squares)
+        self.declare_parameter("singularity_avoidance", True)
+        self.declare_parameter("variable_damping", True)
+        self.declare_parameter("damping_lambda", 0.05)
+        self.declare_parameter("manipulability_threshold", 0.04)
 
         # ── パラメータ取得 ────────────────────────────────────────────────────
         self._urdf_path: str = self.get_parameter("urdf_path").value
@@ -233,14 +263,18 @@ class SpaceMouseIKNode(Node):
         self._gripper_min: float = math.radians(self.get_parameter("gripper_min_deg").value)
         self._gripper_max: float = math.radians(self.get_parameter("gripper_max_deg").value)
         self._gripper_speed: float = math.radians(self.get_parameter("gripper_speed_dps").value)
-        self._use_gripper_tip_ee: bool = self.get_parameter("use_gripper_tip_ee").value
-        self._enable_trail: bool = self.get_parameter("enable_trail").value
-        self._enable_ee_sphere: bool = self.get_parameter("enable_ee_sphere").value
-        self._enable_ee_axes:   bool = self.get_parameter("enable_ee_axes").value
-        self._enable_input_arrows: bool = self.get_parameter("enable_input_arrows").value
+        self._use_gripper_tip_ee: bool = _as_bool(self.get_parameter("use_gripper_tip_ee").value)
+        self._enable_trail: bool = _as_bool(self.get_parameter("enable_trail").value)
+        self._enable_ee_sphere: bool = _as_bool(self.get_parameter("enable_ee_sphere").value)
+        self._enable_ee_axes:   bool = _as_bool(self.get_parameter("enable_ee_axes").value)
+        self._enable_input_arrows: bool = _as_bool(self.get_parameter("enable_input_arrows").value)
         self._velocity_frame: str = self.get_parameter("velocity_frame").value.lower()
         self._task_weight_pos: float = self.get_parameter("task_weight_pos").value
         self._task_weight_rot: float = self.get_parameter("task_weight_rot").value
+        self._singularity_avoidance: bool = _as_bool(self.get_parameter("singularity_avoidance").value)
+        self._variable_damping: bool = _as_bool(self.get_parameter("variable_damping").value)
+        self._damping_lambda: float = self.get_parameter("damping_lambda").value
+        self._manipulability_threshold: float = self.get_parameter("manipulability_threshold").value
         if self._velocity_frame not in ("world", "ee"):
             self.get_logger().warn(
                 f"velocity_frame='{self._velocity_frame}' は無効です。'world' にフォールバックします。"
@@ -256,6 +290,7 @@ class SpaceMouseIKNode(Node):
         self._button_states: List[bool] = []               # SpaceMouse ボタン状態
         self._buttons_lock = threading.Lock()
         self._debug_frame_count: int = 0                  # デバッグ出力用カウンタ
+        self._manip_debug_count: int = 0                  # 可操作性デバッグ出力用カウンタ
 
         # ── frax ロボットモデル読み込み ───────────────────────────────────────
         if not self._urdf_path:
@@ -322,9 +357,39 @@ class SpaceMouseIKNode(Node):
         def _diff_ik_step(q_full, task_vel):
             J, _ = self._robot.velocity_control_matrices(q_full)
             J_ctrl = J[:, jnp.array(self._frax_indices)]
-            # 重み付き擬似逆行列: minimize ||q_dot||^2 s.t. W^(1/2) J q_dot = W^(1/2) x_dot
+            # 重み付きヤコビアン: W^(1/2) J_ctrl
             J_w = _W_sqrt @ J_ctrl          # (6, n_ctrl)
-            J_w_pinv = jnp.linalg.pinv(J_w) # (n_ctrl, 6)
+
+            if self._singularity_avoidance:
+                # 可操作性 w = sqrt(det(J_w^T J_w))  (特異点で 0 に近づく)
+                JTJ = J_w.T @ J_w           # (n_ctrl, n_ctrl)
+                if self._variable_damping:
+                    # Nakamura & Hanafusa 型可変ダンピング
+                    # w < w0 のとき: λ = λ_max * (1 - w/w0)^2
+                    w = jnp.sqrt(jnp.maximum(0.0, jnp.linalg.det(JTJ)))
+                    w0 = jnp.asarray(
+                        self._manipulability_threshold, dtype=jnp.float64
+                    )
+                    lam_max = jnp.asarray(
+                        self._damping_lambda, dtype=jnp.float64
+                    )
+                    lam = jnp.where(
+                        w < w0,
+                        lam_max * (1.0 - w / w0) ** 2,
+                        0.0,
+                    )
+                else:
+                    # 固定ダンピング
+                    lam = jnp.asarray(self._damping_lambda, dtype=jnp.float64)
+                # DLS 擬似逆行列 (right form): J^T (J J^T + λ^2 I)^{-1}
+                JJT = J_w @ J_w.T           # (6, 6)
+                J_w_pinv = J_w.T @ jnp.linalg.inv(
+                    JJT + lam ** 2 * jnp.eye(6, dtype=jnp.float64)
+                )
+            else:
+                # 従来動作: 通常の擬似逆行列
+                J_w_pinv = jnp.linalg.pinv(J_w)  # (n_ctrl, 6)
+
             qd = J_w_pinv @ (_W_sqrt @ task_vel)
             max_vel = jnp.asarray(
                 [self._robot.joint_max_velocities[i] for i in self._frax_indices]
@@ -339,6 +404,15 @@ class SpaceMouseIKNode(Node):
             _, T_ee = self._robot.velocity_control_matrices(q_full)
             return T_ee
 
+        # 可操作性計算用 JIT 関数 (w = sqrt(det(J_w^T J_w)))
+        @jax.jit
+        def _compute_manipulability(q_full):
+            J, _ = self._robot.velocity_control_matrices(q_full)
+            J_ctrl = J[:, jnp.array(self._frax_indices)]
+            J_w = _W_sqrt @ J_ctrl
+            JTJ = J_w.T @ J_w
+            return jnp.sqrt(jnp.maximum(0.0, jnp.linalg.det(JTJ)))
+
         # ウォームアップ
         _diff_ik_step(
             jnp.array(self._q_full, dtype=jnp.float64),
@@ -347,11 +421,21 @@ class SpaceMouseIKNode(Node):
         _get_ee_transform(
             jnp.array(self._q_full, dtype=jnp.float64),
         ).block_until_ready()
+        _compute_manipulability(
+            jnp.array(self._q_full, dtype=jnp.float64),
+        ).block_until_ready()
         self._diff_ik_step = _diff_ik_step
         self._get_ee_transform = _get_ee_transform
+        self._compute_manipulability = _compute_manipulability
+        _sa_mode = (
+            f"DLS ({'variable' if self._variable_damping else 'fixed'}, "
+            f"λ={self._damping_lambda}, w0={self._manipulability_threshold})"
+            if self._singularity_avoidance else "OFF (pinv)"
+        )
         self.get_logger().info(
             f"JIT コンパイル完了。velocity_frame='{self._velocity_frame}', "
-            f"task_weight_pos={self._task_weight_pos}, task_weight_rot={self._task_weight_rot}"
+            f"task_weight_pos={self._task_weight_pos}, task_weight_rot={self._task_weight_rot}, "
+            f"特異点回避={_sa_mode}"
         )
 
         # ── QoS ───────────────────────────────────────────────────────────────
@@ -651,6 +735,25 @@ class SpaceMouseIKNode(Node):
             )
             self._publish_commands()
             return
+
+        # ── 特異点回避デバッグ出力 (60 フレームに 1 回) ──────────────────────
+        if self._singularity_avoidance:
+            self._manip_debug_count += 1
+            if self._manip_debug_count % 60 == 0:
+                try:
+                    w = float(
+                        self._compute_manipulability(
+                            jnp.array(q_full, dtype=jnp.float64)
+                        )
+                    )
+                    near = w < self._manipulability_threshold
+                    self.get_logger().info(
+                        f"[特異点回避] 可操作性 w={w:.4f} "
+                        f"(閾値 w0={self._manipulability_threshold:.4f}, "
+                        f"{'⚠ 特異点近傍' if near else '正常範囲'})"
+                    )
+                except Exception:
+                    pass
 
         # ── 積分 (q = q + qd * dt) + 関節リミットクランプ ───────────────────
         with self._q_lock:

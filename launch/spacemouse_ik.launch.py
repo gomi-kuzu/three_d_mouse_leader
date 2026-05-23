@@ -116,7 +116,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'enable_trail',
-            default_value='false',
+            default_value='false', #TODO:描写が重くなるバグなどを修正
             description='手先軌跡を Rviz に表示するか否か',
         ),
         DeclareLaunchArgument(
@@ -131,13 +131,33 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'enable_input_arrows',
-            default_value='false',
+            default_value='true',
             description='SpaceMouse 入力方向矢印を Rviz に表示するか否か',
         ),
         DeclareLaunchArgument(
             'velocity_frame',
             default_value='world',
             description='手先速度指令の基準座標系: "world" = base_link 系, "ee" = 手先座標系',
+        ),
+        DeclareLaunchArgument(
+            'singularity_avoidance',
+            default_value='true',
+            description='特異点回避を有効にする (DLS 擬似逆行列を使用)',
+        ),
+        DeclareLaunchArgument(
+            'variable_damping',
+            default_value='true',
+            description='可操作性に応じた可変ダンピングを使用 (false = 固定ダンピング)',
+        ),
+        DeclareLaunchArgument(
+            'damping_lambda',
+            default_value='0.05',
+            description='DLS ダンピング係数 λ (大きいほど特異点で安定、追従性低下)',
+        ),
+        DeclareLaunchArgument(
+            'manipulability_threshold',
+            default_value='0.04',
+            description='可変ダンピング開始閾値 w0 (可操作性がこれ以下になると λ が増大)',
         ),
     ]
 
@@ -207,6 +227,10 @@ def generate_launch_description():
             'enable_ee_axes':      LaunchConfiguration('enable_ee_axes'),
             'enable_input_arrows': LaunchConfiguration('enable_input_arrows'),
             'velocity_frame':      LaunchConfiguration('velocity_frame'),
+            'singularity_avoidance': LaunchConfiguration('singularity_avoidance'),
+            'variable_damping':    LaunchConfiguration('variable_damping'),
+            'damping_lambda':      LaunchConfiguration('damping_lambda'),
+            'manipulability_threshold': LaunchConfiguration('manipulability_threshold'),
         }],
     )
 
