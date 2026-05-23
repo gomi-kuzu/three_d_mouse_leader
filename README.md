@@ -144,18 +144,15 @@ ros2 launch three_d_mouse_leader spacemouse_ik.launch.py \
     gripper_speed_dps:=30.0
 ```
 
-### データ記録と組み合わせる場合
-
+### 実機操作
+- [lekiwi用のROS2操作ノード](https://github.com/gomi-kuzu/my_lekiwi_prct)と合わせて使う
 ```bash
 # ターミナル 1: SpaceMouse → IK → トピック配信
 ros2 launch three_d_mouse_leader spacemouse_ik.launch.py
 
-# ターミナル 2: データレコーダー (lekiwi_ros2_teleop パッケージ)
-ros2 launch lekiwi_ros2_teleop lekiwi_record.launch.py \
-    launch_teleop:=false \
-    dataset_repo_id:=john/lekiwi_pick_place \
-    fps:=30 \
-    single_task:="Pick and place the bottle cap"
+# ターミナル 2: ロボット側
+ros2 run lekiwi_ros2_teleop lekiwi_teleop_node \
+  --ros-args -p robot_port:=/dev/ttyACM0
 ```
 
 ---
