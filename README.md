@@ -201,8 +201,8 @@ ros2 run lekiwi_ros2_teleop lekiwi_teleop_node \
 
 ### 自由度不足の対処
 
-SO-ARM101 は 5 DoF（グリッパー除く）ですが、SpaceMouse は 6 DoF 指令を出力します。  
-**疑似逆行列（Moore-Penrose pseudoinverse）**により最小ノルム解を計算し、  
+SO-ARM101 は 関節5軸 （グリッパー除く）ですが、SpaceMouse は 6 DoF 指令を出力します。  
+**疑似逆行列（Moore-Penrose pseudoinverse）**により最小二乗解を計算し、  
 実現可能な範囲で手先速度に追従します。
 
 - 手先位置 (3 DoF) は比較的実現されやすい

@@ -133,7 +133,7 @@ def _build_diff_ik(robot, n_joints: int, kp_pos: float, kp_rot: float):
             joint_vel : 関節速度指令 shape (n_joints,)
         """
         J, _ = robot.velocity_control_matrices(q)
-        # 擬似逆行列による最小ノルム解 (6 DoF タスク → 5 DoF 関節速度)
+        # 擬似逆行列による最小自乗解 (6 DoF タスク → 5 DoF 関節速度: タスク過剰系)
         J_pinv = jnp.linalg.pinv(J)
         qd = J_pinv @ task_vel
         # 速度リミットでクランプ
