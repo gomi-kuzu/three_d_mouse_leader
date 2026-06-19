@@ -2,7 +2,12 @@
 
 SpaceMouse (3D マウス) の 6 軸入力を手先速度指令に変換し、
 [frax](https://github.com/danielpmorton/frax) ライブラリを用いた**微分逆運動学 (Differential IK)** によって
-SO-ARM101 の 5 軸関節位置指令を生成し、ROS2 トピックに配信するパッケージです。
+ロボットの関節位置指令を生成し、ROS2 トピックに配信するパッケージです。
+
+現在は `robot_type` パラメータで次を切り替え可能です。
+
+- `so101` (既定): 既存の `/lekiwi/arm_joint_commands` 連携
+- `mycobot280`: `/mycobot/joint_commands` 連携 (`mycobot_jointstate_controller` 向け)
 
 ---
 
@@ -73,6 +78,28 @@ source install/setup.bash
 ---
 
 ## 使用方法
+
+### robot_type の切り替え
+
+```bash
+# 既定 (SO-101)
+ros2 launch three_d_mouse_leader spacemouse_ik.launch.py robot_type:=so101
+
+# myCobot 280
+ros2 launch three_d_mouse_leader spacemouse_ik.launch.py \
+    robot_type:=mycobot280 \
+    urdf_path:=$ROS_HOME/src/three_d_mouse_leader/urdf/mycobot_280_m5/mycobot_280_m5.urdf \
+    init_joint_positions:="0,0,0,0,0,0"
+```
+
+`robot_type:=mycobot280` のときは、既定で以下を使用します。
+
+- feedback topic: `/mycobot/joint_states`
+- command topic: `/mycobot/joint_commands`
+- feedback unit: `rad`
+- command unit: `rad`
+- command joint names: `joint1..joint6`
+- IK 内部の URDF 関節名は `joint2_to_joint1..joint6output_to_joint6` を使用
 
 ### 基本的な起動
 

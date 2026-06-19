@@ -7,6 +7,7 @@
         urdf_path:=/path/to/so101_new_calib.urdf
 
 オプション引数 (すべて launch 引数で上書き可能):
+    robot_type             : ロボット種類 "so101" / "mycobot280" (デフォルト "so101")
     urdf_path              : URDF ファイルパス (必須)
     control_frequency      : 制御周波数 [Hz] (デフォルト 30.0)
     lin_gain_x/y/z         : 並進ゲイン (デフォルト 0.10)
@@ -20,7 +21,7 @@
 
 import launch
 import launch_ros.actions
-from launch.substitutions import LaunchConfiguration, Command
+from launch.substitutions import LaunchConfiguration, Command, PythonExpression
 from launch.actions import DeclareLaunchArgument
 from launch_ros.parameter_descriptions import ParameterValue
 from ament_index_python.packages import get_package_share_directory
@@ -33,6 +34,11 @@ def generate_launch_description():
 
     # ── Launch 引数定義 ────────────────────────────────────────────────────────
     args = [
+        DeclareLaunchArgument(
+            'robot_type',
+            default_value='so101',
+            description='ロボット種類: "so101" / "mycobot280"',
+        ),
         DeclareLaunchArgument(
             'urdf_path',
             default_value=default_urdf,
@@ -103,6 +109,51 @@ def generate_launch_description():
             'joint_names_so101',
             default_value='shoulder_pan,shoulder_lift,elbow_flex,wrist_flex,wrist_roll',
             description='制御対象の URDF 関節名 (カンマ区切り)',
+        ),
+        DeclareLaunchArgument(
+            'joint_names_mycobot',
+            default_value='joint2_to_joint1,joint3_to_joint2,joint4_to_joint3,joint5_to_joint4,joint6_to_joint5,joint6output_to_joint6',
+            description='myCobot 用の制御対象 URDF 関節名 (frax が使用する joint 名, カンマ区切り)',
+        ),
+        DeclareLaunchArgument(
+            'joint_state_topic',
+            default_value='',
+            description='現在関節角トピック (空文字なら robot_type 既定値を使用)',
+        ),
+        DeclareLaunchArgument(
+            'joint_command_topic',
+            default_value='',
+            description='関節指令トピック (空文字なら robot_type 既定値を使用)',
+        ),
+        DeclareLaunchArgument(
+            'feedback_joint_names',
+            default_value='',
+            description='フィードバック JointState の関節名 (空文字なら robot_type 既定値を使用)',
+        ),
+        DeclareLaunchArgument(
+            'command_joint_names',
+            default_value='',
+            description='コマンド JointState の関節名 (空文字なら robot_type 既定値を使用)',
+        ),
+        DeclareLaunchArgument(
+            'feedback_unit_mode',
+            default_value='auto',
+            description='フィードバック単位: auto / range_m100_100 / rad / deg',
+        ),
+        DeclareLaunchArgument(
+            'command_unit_mode',
+            default_value='auto',
+            description='コマンド単位: auto / range_m100_100 / rad / deg',
+        ),
+        DeclareLaunchArgument(
+            'base_frame_id',
+            default_value='',
+            description='可視化/入力矢印の基準フレーム (空文字なら robot_type 既定値)',
+        ),
+        DeclareLaunchArgument(
+            'ee_frame_id',
+            default_value='',
+            description='EE マーカー/EE入力矢印フレーム (空文字なら robot_type 既定値)',
         ),
         DeclareLaunchArgument(
             'use_rviz',
@@ -179,15 +230,35 @@ def generate_launch_description():
     )
 
     # ── Rviz2 ──────────────────────────────────────────────────────────────
-    default_rviz_config = os.path.join(pkg_dir, 'rviz', 'spacemouse_ik.rviz')
+    default_rviz_config_so101 = os.path.join(pkg_dir, 'rviz', 'spacemouse_ik.rviz')
+    default_rviz_config_mycobot = os.path.join(pkg_dir, 'rviz', 'spacemouse_ik_mycobot.rviz')
 
-    rviz_node = launch_ros.actions.Node(
+    rviz_node_so101 = launch_ros.actions.Node(
         package='rviz2',
         executable='rviz2',
         name='rviz2',
         output='screen',
-        arguments=['-d', default_rviz_config],
-        condition=launch.conditions.IfCondition(LaunchConfiguration('use_rviz')),
+        arguments=['-d', default_rviz_config_so101],
+        condition=launch.conditions.IfCondition(
+            PythonExpression([
+                '"', LaunchConfiguration('use_rviz'), '" == "true" and '
+                '"', LaunchConfiguration('robot_type'), '" not in ["mycobot", "mycobot280", "mycobot280_m5"]'
+            ])
+        ),
+    )
+
+    rviz_node_mycobot = launch_ros.actions.Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        output='screen',
+        arguments=['-d', default_rviz_config_mycobot],
+        condition=launch.conditions.IfCondition(
+            PythonExpression([
+                '"', LaunchConfiguration('use_rviz'), '" == "true" and '
+                '"', LaunchConfiguration('robot_type'), '" in ["mycobot", "mycobot280", "mycobot280_m5"]'
+            ])
+        ),
     )
 
     mock_servo_node = launch_ros.actions.Node(
@@ -196,7 +267,12 @@ def generate_launch_description():
         name='mock_servo_node',
         output='screen',
         parameters=[{
+            'robot_type': LaunchConfiguration('robot_type'),
             'init_joint_positions': LaunchConfiguration('init_joint_positions'),
+            'joint_state_topic': LaunchConfiguration('joint_state_topic'),
+            'joint_command_topic': LaunchConfiguration('joint_command_topic'),
+            'feedback_unit_mode': LaunchConfiguration('feedback_unit_mode'),
+            'joint_names_cmd': LaunchConfiguration('command_joint_names'),
         }],
         condition=launch.conditions.IfCondition(LaunchConfiguration('use_mock_servo')),
     )
@@ -208,6 +284,7 @@ def generate_launch_description():
         name='spacemouse_ik_node',
         output='screen',
         parameters=[{
+            'robot_type':          LaunchConfiguration('robot_type'),
             'urdf_path':           LaunchConfiguration('urdf_path'),
             'control_frequency':   LaunchConfiguration('control_frequency'),
             'lin_gain_x':          LaunchConfiguration('lin_gain_x'),
@@ -222,6 +299,15 @@ def generate_launch_description():
             'gripper_init_deg':    LaunchConfiguration('gripper_init_deg'),
             'use_gripper_tip_ee':  LaunchConfiguration('use_gripper_tip_ee'),
             'joint_names_so101':   LaunchConfiguration('joint_names_so101'),
+            'joint_names_mycobot': LaunchConfiguration('joint_names_mycobot'),
+            'joint_state_topic':   LaunchConfiguration('joint_state_topic'),
+            'joint_command_topic': LaunchConfiguration('joint_command_topic'),
+            'feedback_joint_names': LaunchConfiguration('feedback_joint_names'),
+            'command_joint_names': LaunchConfiguration('command_joint_names'),
+            'feedback_unit_mode':  LaunchConfiguration('feedback_unit_mode'),
+            'command_unit_mode':   LaunchConfiguration('command_unit_mode'),
+            'base_frame_id':       LaunchConfiguration('base_frame_id'),
+            'ee_frame_id':         LaunchConfiguration('ee_frame_id'),
             'enable_trail':        LaunchConfiguration('enable_trail'),
             'enable_ee_sphere':    LaunchConfiguration('enable_ee_sphere'),
             'enable_ee_axes':      LaunchConfiguration('enable_ee_axes'),
@@ -238,5 +324,6 @@ def generate_launch_description():
         robot_state_publisher_node,
         spacemouse_ik_node,
         mock_servo_node,
-        rviz_node,
+        rviz_node_so101,
+        rviz_node_mycobot,
     ])
