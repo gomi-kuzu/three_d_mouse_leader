@@ -86,7 +86,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'init_joint_positions',
-            # default_value='0,-45,90,-45,0',            
+            # default_value='0,-45,90,-45,0',
             default_value='0.0,-78.0,82.0,62.0,0.0', #lekiwi home position
             description='初期関節角 [degree], カンマ区切り (shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll)',
         ),
@@ -210,6 +210,46 @@ def generate_launch_description():
             default_value='0.04',
             description='可変ダンピング開始閾値 w0 (可操作性がこれ以下になると λ が増大)',
         ),
+        DeclareLaunchArgument(
+            'feedback_correction_enabled',
+            default_value='false',
+            description='実測角への補正を有効化 (既定: false)',
+        ),
+        DeclareLaunchArgument(
+            'feedback_correction_only_when_commanding',
+            default_value='true',
+            description='操作入力があるときだけ補正を適用 (ドリフト再発防止)',
+        ),
+        DeclareLaunchArgument(
+            'feedback_correction_alpha',
+            default_value='0.2',
+            description='実測角への補正ゲイン (0.0-1.0)',
+        ),
+        DeclareLaunchArgument(
+            'feedback_correction_deadband_deg',
+            default_value='0.8',
+            description='この角度差未満は補正しないデッドバンド [deg]',
+        ),
+        DeclareLaunchArgument(
+            'feedback_correction_max_step_deg',
+            default_value='0.4',
+            description='1周期あたりの最大補正量 [deg]',
+        ),
+        DeclareLaunchArgument(
+            'feedback_correction_command_threshold',
+            default_value='0.01',
+            description='操作あり判定の task_vel ノルム閾値',
+        ),
+        DeclareLaunchArgument(
+            'profile_ik_timing',
+            default_value='false',
+            description='IK 計算時間の計測ログを有効化',
+        ),
+        DeclareLaunchArgument(
+            'timing_log_every_n',
+            default_value='120',
+            description='IK 計測ログを出すサンプル間隔',
+        ),
     ]
 
     # ── robot_state_publisher ───────────────────────────────────────────────
@@ -317,6 +357,14 @@ def generate_launch_description():
             'variable_damping':    LaunchConfiguration('variable_damping'),
             'damping_lambda':      LaunchConfiguration('damping_lambda'),
             'manipulability_threshold': LaunchConfiguration('manipulability_threshold'),
+            'feedback_correction_enabled': LaunchConfiguration('feedback_correction_enabled'),
+            'feedback_correction_only_when_commanding': LaunchConfiguration('feedback_correction_only_when_commanding'),
+            'feedback_correction_alpha': LaunchConfiguration('feedback_correction_alpha'),
+            'feedback_correction_deadband_deg': LaunchConfiguration('feedback_correction_deadband_deg'),
+            'feedback_correction_max_step_deg': LaunchConfiguration('feedback_correction_max_step_deg'),
+            'feedback_correction_command_threshold': LaunchConfiguration('feedback_correction_command_threshold'),
+            'profile_ik_timing': LaunchConfiguration('profile_ik_timing'),
+            'timing_log_every_n': LaunchConfiguration('timing_log_every_n'),
         }],
     )
 

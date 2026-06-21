@@ -332,6 +332,15 @@ class SpaceMouseIKNode(Node):
         self.declare_parameter("damping_lambda", 0.05)
         self.declare_parameter("manipulability_threshold", 0.04)
         self.declare_parameter("min_joint_max_velocity", 1.0)
+        # 実測角への補正（ドリフト対策のため既定は無効）
+        self.declare_parameter("feedback_correction_enabled", False)
+        self.declare_parameter("feedback_correction_only_when_commanding", True)
+        self.declare_parameter("feedback_correction_alpha", 0.2)
+        self.declare_parameter("feedback_correction_deadband_deg", 0.8)
+        self.declare_parameter("feedback_correction_max_step_deg", 0.4)
+        self.declare_parameter("feedback_correction_command_threshold", 0.01)
+        self.declare_parameter("profile_ik_timing", False)
+        self.declare_parameter("timing_log_every_n", 120)
 
         # ── パラメータ取得 ────────────────────────────────────────────────────
         self._urdf_path: str = self.get_parameter("urdf_path").value
@@ -461,11 +470,45 @@ class SpaceMouseIKNode(Node):
         self._damping_lambda: float = self.get_parameter("damping_lambda").value
         self._manipulability_threshold: float = self.get_parameter("manipulability_threshold").value
         self._min_joint_max_velocity: float = self.get_parameter("min_joint_max_velocity").value
+        self._feedback_correction_enabled: bool = _as_bool(
+            self.get_parameter("feedback_correction_enabled").value
+        )
+        self._feedback_correction_only_when_commanding: bool = _as_bool(
+            self.get_parameter("feedback_correction_only_when_commanding").value
+        )
+        self._feedback_correction_alpha: float = float(
+            self.get_parameter("feedback_correction_alpha").value
+        )
+        self._feedback_correction_deadband_rad: float = math.radians(float(
+            self.get_parameter("feedback_correction_deadband_deg").value
+        ))
+        self._feedback_correction_max_step_rad: float = math.radians(float(
+            self.get_parameter("feedback_correction_max_step_deg").value
+        ))
+        self._feedback_correction_command_threshold: float = float(
+            self.get_parameter("feedback_correction_command_threshold").value
+        )
+        self._profile_ik_timing: bool = _as_bool(
+            self.get_parameter("profile_ik_timing").value
+        )
+        self._timing_log_every_n: int = int(
+            self.get_parameter("timing_log_every_n").value
+        )
         if self._velocity_frame not in ("world", "ee"):
             self.get_logger().warn(
                 f"velocity_frame='{self._velocity_frame}' は無効です。'world' にフォールバックします。"
             )
             self._velocity_frame = "world"
+        if not (0.0 <= self._feedback_correction_alpha <= 1.0):
+            raise ValueError("feedback_correction_alpha must be in [0.0, 1.0].")
+        if self._feedback_correction_deadband_rad < 0.0:
+            raise ValueError("feedback_correction_deadband_deg must be >= 0.0.")
+        if self._feedback_correction_max_step_rad < 0.0:
+            raise ValueError("feedback_correction_max_step_deg must be >= 0.0.")
+        if self._feedback_correction_command_threshold < 0.0:
+            raise ValueError("feedback_correction_command_threshold must be >= 0.0.")
+        if self._timing_log_every_n <= 0:
+            raise ValueError("timing_log_every_n must be > 0.")
 
         # ── 状態変数 ─────────────────────────────────────────────────────────
         self._q: np.ndarray = self._init_q.copy()         # 積分済み関節角 [rad]
@@ -477,6 +520,10 @@ class SpaceMouseIKNode(Node):
         self._buttons_lock = threading.Lock()
         self._debug_frame_count: int = 0                  # デバッグ出力用カウンタ
         self._manip_debug_count: int = 0                  # 可操作性デバッグ出力用カウンタ
+        self._ik_timing_count: int = 0
+        self._ik_timing_sum_ms: float = 0.0
+        self._ik_timing_min_ms: float = float("inf")
+        self._ik_timing_max_ms: float = 0.0
 
         # ── frax ロボットモデル読み込み ───────────────────────────────────────
         if not self._urdf_path:
@@ -713,6 +760,20 @@ class SpaceMouseIKNode(Node):
             f"base_frame={self._base_frame_id}, ee_frame={self._ee_frame_id}"
         )
 
+        self.get_logger().info(
+            "実測補正: "
+            f"enabled={self._feedback_correction_enabled}, "
+            f"only_when_commanding={self._feedback_correction_only_when_commanding}, "
+            f"alpha={self._feedback_correction_alpha}, "
+            f"deadband_deg={math.degrees(self._feedback_correction_deadband_rad):.3f}, "
+            f"max_step_deg={math.degrees(self._feedback_correction_max_step_rad):.3f}, "
+            f"cmd_threshold={self._feedback_correction_command_threshold}"
+        )
+        self.get_logger().info(
+            f"IK timing profile: enabled={self._profile_ik_timing}, "
+            f"log_every_n={self._timing_log_every_n}"
+        )
+
     # ── コールバック ──────────────────────────────────────────────────────────
 
     def _joint_state_callback(self, msg: JointState):
@@ -809,6 +870,52 @@ class SpaceMouseIKNode(Node):
     def _apply_deadzone(self, value: float) -> float:
         return value if abs(value) >= self._deadzone else 0.0
 
+    def _apply_feedback_correction(self, task_vel_norm: float) -> None:
+        """操作中のみ実測値へ穏やかに寄せて、開ループずれを抑える。"""
+        if not self._feedback_correction_enabled:
+            return
+
+        if self._feedback_correction_only_when_commanding:
+            if task_vel_norm < self._feedback_correction_command_threshold:
+                return
+
+        with self._q_lock:
+            if self._current_q is None:
+                return
+
+            error = self._current_q - self._q
+            error = np.where(
+                np.abs(error) >= self._feedback_correction_deadband_rad,
+                error,
+                0.0,
+            )
+            if not np.any(error):
+                return
+
+            correction_step = np.clip(
+                error * self._feedback_correction_alpha,
+                -self._feedback_correction_max_step_rad,
+                self._feedback_correction_max_step_rad,
+            )
+            self._q = np.clip(self._q + correction_step, self._joint_lo, self._joint_hi)
+            self._q_full[self._frax_indices] = self._q
+
+    def _record_ik_timing(self, elapsed_ms: float) -> None:
+        self._ik_timing_count += 1
+        self._ik_timing_sum_ms += elapsed_ms
+        self._ik_timing_min_ms = min(self._ik_timing_min_ms, elapsed_ms)
+        self._ik_timing_max_ms = max(self._ik_timing_max_ms, elapsed_ms)
+
+        if self._ik_timing_count % self._timing_log_every_n == 0:
+            avg_ms = self._ik_timing_sum_ms / self._ik_timing_count
+            self.get_logger().info(
+                "[IK timing] "
+                f"samples={self._ik_timing_count}, "
+                f"avg_ms={avg_ms:.3f}, "
+                f"min_ms={self._ik_timing_min_ms:.3f}, "
+                f"max_ms={self._ik_timing_max_ms:.3f}"
+            )
+
     def _control_loop(self):
         """メイン制御ループ: SpaceMouse → IK → JointState 配信。"""
         import jax.numpy as jnp
@@ -897,6 +1004,8 @@ class SpaceMouseIKNode(Node):
                     f"EE フレーム変換エラー: {e}", throttle_duration_sec=1.0
                 )
 
+        self._apply_feedback_correction(float(np.linalg.norm(task_vel)))
+
         # SpaceMouse 生入力を配信 (常時)
         raw_msg = TwistStamped()
         raw_msg.header.stamp = self.get_clock().now().to_msg()
@@ -943,12 +1052,15 @@ class SpaceMouseIKNode(Node):
 
         # ── 差分 IK ───────────────────────────────────────────────────────────
         try:
+            ik_t0 = time.perf_counter() if self._profile_ik_timing else None
             qd = np.asarray(
                 self._diff_ik_step(
                     jnp.array(q_full, dtype=jnp.float64),
                     jnp.array(task_vel, dtype=jnp.float64),
                 )
             )
+            if ik_t0 is not None:
+                self._record_ik_timing((time.perf_counter() - ik_t0) * 1000.0)
         except Exception as e:
             self.get_logger().warn(
                 f"IK 計算エラー: {e}", throttle_duration_sec=1.0
