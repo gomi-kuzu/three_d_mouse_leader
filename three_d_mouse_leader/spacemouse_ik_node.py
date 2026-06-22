@@ -87,13 +87,90 @@ def _as_bool(value) -> bool:
     return str(value).lower() not in ('false', '0', 'no', 'off')
 
 
-def _prepare_urdf_for_frax(urdf_path: str, logger=None) -> str:
-    """frax が必要とする inertial 要素が不足する URDF を補完して返す。"""
+def _prepare_urdf_for_frax(
+    urdf_path: str,
+    logger=None,
+    keep_joint_names: Optional[List[str]] = None,
+) -> str:
+    """frax が必要とする前処理 (主鎖抽出 + inertial 補完) を行った URDF パスを返す。"""
     try:
         tree = ET.parse(urdf_path)
         root = tree.getroot()
     except Exception:
         return urdf_path
+
+    pruned_joint_count = 0
+    pruned_link_count = 0
+
+    if keep_joint_names:
+        joints = root.findall("joint")
+        links = root.findall("link")
+        joint_by_name = {j.attrib.get("name", ""): j for j in joints}
+        child_to_joint = {}
+        for joint in joints:
+            child = joint.find("child")
+            if child is None:
+                continue
+            child_name = child.attrib.get("link")
+            if child_name:
+                child_to_joint[child_name] = joint
+
+        keep_joint_set = set()
+        for name in keep_joint_names:
+            joint = joint_by_name.get(name)
+            if joint is None:
+                if logger is not None:
+                    logger.warn(f"frax 用URDF抽出: 指定関節 '{name}' が見つかりません。")
+                continue
+            keep_joint_set.add(joint)
+
+        keep_link_set = set()
+        for joint in list(keep_joint_set):
+            parent = joint.find("parent")
+            child = joint.find("child")
+            if parent is not None:
+                p_link = parent.attrib.get("link")
+                if p_link:
+                    keep_link_set.add(p_link)
+            if child is not None:
+                c_link = child.attrib.get("link")
+                if c_link:
+                    keep_link_set.add(c_link)
+
+        # ルートまでの接続に必要な上流 joint/link を補完する。
+        frontier = list(keep_link_set)
+        while frontier:
+            link_name = frontier.pop()
+            parent_joint = child_to_joint.get(link_name)
+            if parent_joint is None or parent_joint in keep_joint_set:
+                continue
+            keep_joint_set.add(parent_joint)
+            parent = parent_joint.find("parent")
+            child = parent_joint.find("child")
+            if parent is not None:
+                p_link = parent.attrib.get("link")
+                if p_link and p_link not in keep_link_set:
+                    keep_link_set.add(p_link)
+                    frontier.append(p_link)
+            if child is not None:
+                c_link = child.attrib.get("link")
+                if c_link and c_link not in keep_link_set:
+                    keep_link_set.add(c_link)
+                    frontier.append(c_link)
+
+        keep_joint_names_set = {
+            joint.attrib.get("name", "") for joint in keep_joint_set
+        }
+        keep_link_names_set = set(keep_link_set)
+
+        for joint in joints:
+            if joint.attrib.get("name", "") not in keep_joint_names_set:
+                root.remove(joint)
+                pruned_joint_count += 1
+        for link in links:
+            if link.attrib.get("name", "") not in keep_link_names_set:
+                root.remove(link)
+                pruned_link_count += 1
 
     added_count = 0
     for link in root.findall("link"):
@@ -116,7 +193,7 @@ def _prepare_urdf_for_frax(urdf_path: str, logger=None) -> str:
         )
         added_count += 1
 
-    if added_count == 0:
+    if added_count == 0 and pruned_joint_count == 0 and pruned_link_count == 0:
         return urdf_path
 
     tmp_dir = os.path.join(tempfile.gettempdir(), "three_d_mouse_leader")
@@ -130,8 +207,15 @@ def _prepare_urdf_for_frax(urdf_path: str, logger=None) -> str:
     tree.write(out_path, encoding="utf-8", xml_declaration=True)
 
     if logger is not None:
+        details = []
+        if pruned_joint_count > 0 or pruned_link_count > 0:
+            details.append(
+                f"主鎖抽出: {pruned_joint_count} joint, {pruned_link_count} link を除外"
+            )
+        if added_count > 0:
+            details.append(f"inertial 補完: {added_count} link")
         logger.warn(
-            f"URDF に inertial が不足していたため {added_count} link を補完して frax 用 URDF を生成: {out_path}"
+            "frax 用 URDF を生成: " + ", ".join(details) + f" -> {out_path}"
         )
     return out_path
 
@@ -259,6 +343,7 @@ class SpaceMouseIKNode(Node):
     _DEFAULT_EE_FRAME_SO101 = "gripper_frame_link"
     _DEFAULT_BASE_FRAME_MYCOBOT = "g_base"
     _DEFAULT_EE_FRAME_MYCOBOT = "joint6_flange"
+    _VIZ_GRIPPER_JOINT_MYCOBOT = "gripper_controller"
     _DEFAULT_INIT_DEG = (0.0, -45.0, 90.0, -45.0, 0.0)
     _DEFAULT_INIT_DEG_MYCOBOT = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
@@ -532,7 +617,15 @@ class SpaceMouseIKNode(Node):
                 "launch ファイルで urdf_path を指定してください。"
             )
         self.get_logger().info(f"URDF を読み込み中: {self._urdf_path}")
-        frax_urdf_path = _prepare_urdf_for_frax(self._urdf_path, self.get_logger())
+        frax_urdf_path = _prepare_urdf_for_frax(
+            self._urdf_path,
+            self.get_logger(),
+            keep_joint_names=(
+                list(self._urdf_joint_names)
+                if self._robot_type == self._ROBOT_TYPE_MYCOBOT280
+                else None
+            ),
+        )
         try:
             self._robot = _load_robot(frax_urdf_path, self._use_gripper_tip_ee)
         except Exception as e:
@@ -1132,6 +1225,10 @@ class SpaceMouseIKNode(Node):
         viz_msg.header.stamp = msg.header.stamp
         viz_msg.name = list(self._urdf_joint_names)
         viz_msg.position = list(q)
+        if self._robot_type == self._ROBOT_TYPE_MYCOBOT280:
+            # adaptive gripper は mimic 連動のため、親関節のみ配信すれば指リンクが追従する
+            viz_msg.name.append(self._VIZ_GRIPPER_JOINT_MYCOBOT)
+            viz_msg.position.append(self._gripper_pos)
         if self._command_has_gripper:
             viz_msg.name.append("gripper")
             viz_msg.position.append(self._gripper_pos)
