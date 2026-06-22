@@ -66,7 +66,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Header, ColorRGBA
+from std_msgs.msg import Header, ColorRGBA, Int32
 from geometry_msgs.msg import Point
 from visualization_msgs.msg import Marker, MarkerArray
 from geometry_msgs.msg import TwistStamped
@@ -85,6 +85,31 @@ def _as_bool(value) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).lower() not in ('false', '0', 'no', 'off')
+
+
+def _get_joint_limit_from_urdf(urdf_path: str, joint_name: str):
+    """URDF から対象 joint の [lower, upper] (rad) を取得する。見つからない場合は None。"""
+    try:
+        tree = ET.parse(urdf_path)
+        root = tree.getroot()
+    except Exception:
+        return None
+
+    for joint in root.findall("joint"):
+        if joint.attrib.get("name") != joint_name:
+            continue
+        limit = joint.find("limit")
+        if limit is None:
+            return None
+        try:
+            lower = float(limit.attrib.get("lower"))
+            upper = float(limit.attrib.get("upper"))
+        except (TypeError, ValueError):
+            return None
+        lo = min(lower, upper)
+        hi = max(lower, upper)
+        return (lo, hi)
+    return None
 
 
 def _prepare_urdf_for_frax(
@@ -345,7 +370,7 @@ class SpaceMouseIKNode(Node):
     _DEFAULT_EE_FRAME_MYCOBOT = "joint6_flange"
     _VIZ_GRIPPER_JOINT_MYCOBOT = "gripper_controller"
     _DEFAULT_INIT_DEG = (0.0, -45.0, 90.0, -45.0, 0.0)
-    _DEFAULT_INIT_DEG_MYCOBOT = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    _DEFAULT_INIT_DEG_MYCOBOT = (0.0,50.0,-130.0,30.0,0.0,0.0)
 
     def __init__(self):
         super().__init__("spacemouse_ik_node")
@@ -393,10 +418,15 @@ class SpaceMouseIKNode(Node):
         # グリッパー開閉角度リミット [degree]
         self.declare_parameter("gripper_min_deg", -10.0)
         self.declare_parameter("gripper_max_deg",  100.0)
+        self.declare_parameter("auto_gripper_limits_from_urdf", True)
         # グリッパー開閉速度 [degree/s] (ボタン押下時)
         self.declare_parameter("gripper_speed_dps", 40.0)
         # EE 座標系選択: True=グリッパ先端, False=手首ロール後の付け根
         self.declare_parameter("use_gripper_tip_ee", True)
+        self.declare_parameter("mycobot_gripper_value_topic", "/mycobot/gripper/value")
+        self.declare_parameter("mycobot_gripper_value_min", 0)
+        self.declare_parameter("mycobot_gripper_value_max", 100)
+        self.declare_parameter("publish_mycobot_gripper_value", True)
         # 手先軌跡表示
         self.declare_parameter("enable_trail", False)
         # 手先球マーカー表示
@@ -541,7 +571,37 @@ class SpaceMouseIKNode(Node):
         )
         self._gripper_min: float = math.radians(self.get_parameter("gripper_min_deg").value)
         self._gripper_max: float = math.radians(self.get_parameter("gripper_max_deg").value)
+        self._auto_gripper_limits_from_urdf: bool = _as_bool(
+            self.get_parameter("auto_gripper_limits_from_urdf").value
+        )
+        if self._robot_type == self._ROBOT_TYPE_MYCOBOT280 and self._auto_gripper_limits_from_urdf:
+            gripper_limits = _get_joint_limit_from_urdf(
+                self._urdf_path,
+                self._VIZ_GRIPPER_JOINT_MYCOBOT,
+            )
+            if gripper_limits is not None:
+                self._gripper_min, self._gripper_max = gripper_limits
+            else:
+                self.get_logger().warn(
+                    "URDF から gripper_controller の角度制限を取得できなかったため、"
+                    "gripper_min_deg/gripper_max_deg パラメータ値を使用します。"
+                )
+        self._gripper_pos = float(np.clip(self._gripper_pos, self._gripper_min, self._gripper_max))
         self._gripper_speed: float = math.radians(self.get_parameter("gripper_speed_dps").value)
+        self._mycobot_gripper_value_topic: str = str(
+            self.get_parameter("mycobot_gripper_value_topic").value
+        )
+        self._mycobot_gripper_value_min: int = int(
+            self.get_parameter("mycobot_gripper_value_min").value
+        )
+        self._mycobot_gripper_value_max: int = int(
+            self.get_parameter("mycobot_gripper_value_max").value
+        )
+        self._publish_mycobot_gripper_value: bool = _as_bool(
+            self.get_parameter("publish_mycobot_gripper_value").value
+        )
+        if self._mycobot_gripper_value_min >= self._mycobot_gripper_value_max:
+            raise ValueError("mycobot_gripper_value_min must be smaller than mycobot_gripper_value_max.")
         self._use_gripper_tip_ee: bool = _as_bool(self.get_parameter("use_gripper_tip_ee").value)
         self._enable_trail: bool = _as_bool(self.get_parameter("enable_trail").value)
         self._enable_ee_sphere: bool = _as_bool(self.get_parameter("enable_ee_sphere").value)
@@ -603,6 +663,7 @@ class SpaceMouseIKNode(Node):
         self._sm_lock = threading.Lock()
         self._button_states: List[bool] = []               # SpaceMouse ボタン状態
         self._buttons_lock = threading.Lock()
+        self._gripper_value_last_sent: Optional[int] = None
         self._debug_frame_count: int = 0                  # デバッグ出力用カウンタ
         self._manip_debug_count: int = 0                  # 可操作性デバッグ出力用カウンタ
         self._ik_timing_count: int = 0
@@ -803,6 +864,11 @@ class SpaceMouseIKNode(Node):
         self._arm_cmd_pub = self.create_publisher(
             JointState, self._joint_command_topic, qos
         )
+        self._mycobot_gripper_value_pub = None
+        if self._robot_type == self._ROBOT_TYPE_MYCOBOT280 and self._publish_mycobot_gripper_value:
+            self._mycobot_gripper_value_pub = self.create_publisher(
+                Int32, self._mycobot_gripper_value_topic, qos
+            )
         # Rviz 可視化用: robot_state_publisher に渡す URDF 関節名で配信
         self._viz_joint_state_pub = self.create_publisher(
             JointState, "/joint_states", qos
@@ -861,6 +927,13 @@ class SpaceMouseIKNode(Node):
             f"deadband_deg={math.degrees(self._feedback_correction_deadband_rad):.3f}, "
             f"max_step_deg={math.degrees(self._feedback_correction_max_step_rad):.3f}, "
             f"cmd_threshold={self._feedback_correction_command_threshold}"
+        )
+        self.get_logger().info(
+            "グリッパー設定: "
+            f"min_deg={math.degrees(self._gripper_min):.2f}, "
+            f"max_deg={math.degrees(self._gripper_max):.2f}, "
+            f"speed_dps={math.degrees(self._gripper_speed):.2f}, "
+            f"auto_limits={self._auto_gripper_limits_from_urdf}"
         )
         self.get_logger().info(
             f"IK timing profile: enabled={self._profile_ik_timing}, "
@@ -1233,6 +1306,20 @@ class SpaceMouseIKNode(Node):
             viz_msg.name.append("gripper")
             viz_msg.position.append(self._gripper_pos)
         self._viz_joint_state_pub.publish(viz_msg)
+
+        if self._mycobot_gripper_value_pub is not None:
+            span = self._gripper_max - self._gripper_min
+            if span > 1e-9:
+                ratio = (self._gripper_pos - self._gripper_min) / span
+            else:
+                ratio = 0.0
+            ratio = float(np.clip(ratio, 0.0, 1.0))
+            value_min = self._mycobot_gripper_value_min
+            value_max = self._mycobot_gripper_value_max
+            value = int(round(value_min + ratio * (value_max - value_min)))
+            if self._gripper_value_last_sent != value:
+                self._gripper_value_last_sent = value
+                self._mycobot_gripper_value_pub.publish(Int32(data=value))
 
         # ── エンドエフェクタ マーカー (FK で位置計算) ─────────────────────────
         self._publish_ee_markers(msg.header.stamp, q)

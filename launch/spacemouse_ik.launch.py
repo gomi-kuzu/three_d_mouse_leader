@@ -87,7 +87,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'init_joint_positions',
             # default_value='0,-45,90,-45,0',
-            default_value='0.0,-78.0,82.0,62.0,0.0', #lekiwi home position
+            default_value='0.0,50.0,-130.0,30.0,0.0,0.0', #myCobot
+            # default_value='0.0,-78.0,82.0,62.0,0.0', #lekiwi home position
             description='初期関節角 [degree], カンマ区切り (shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll)',
         ),
         DeclareLaunchArgument(
@@ -99,6 +100,46 @@ def generate_launch_description():
             'gripper_init_deg',
             default_value='0.0',
             description='グリッパー初期角 [degree]',
+        ),
+        DeclareLaunchArgument(
+            'gripper_min_deg',
+            default_value='-10.0',
+            description='グリッパー最小角 [degree] (auto_gripper_limits_from_urdf=true なら上書き)',
+        ),
+        DeclareLaunchArgument(
+            'gripper_max_deg',
+            default_value='100.0',
+            description='グリッパー最大角 [degree] (auto_gripper_limits_from_urdf=true なら上書き)',
+        ),
+        DeclareLaunchArgument(
+            'gripper_speed_dps',
+            default_value='40.0',
+            description='グリッパー開閉速度 [degree/s]',
+        ),
+        DeclareLaunchArgument(
+            'auto_gripper_limits_from_urdf',
+            default_value='true',
+            description='mycobot時にURDFのgripper_controller制限で min/max を自動設定',
+        ),
+        DeclareLaunchArgument(
+            'publish_mycobot_gripper_value',
+            default_value='true',
+            description='mycobot用の実機グリッパー値トピックを publish するか',
+        ),
+        DeclareLaunchArgument(
+            'mycobot_gripper_value_topic',
+            default_value='/mycobot/gripper/value',
+            description='mycobotグリッパー開度値トピック (std_msgs/Int32)',
+        ),
+        DeclareLaunchArgument(
+            'mycobot_gripper_value_min',
+            default_value='0',
+            description='mycobotグリッパー開度最小値',
+        ),
+        DeclareLaunchArgument(
+            'mycobot_gripper_value_max',
+            default_value='100',
+            description='mycobotグリッパー開度最大値',
         ),
         DeclareLaunchArgument(
             'use_gripper_tip_ee',
@@ -337,6 +378,14 @@ def generate_launch_description():
             'init_joint_positions': LaunchConfiguration('init_joint_positions'),
             'device_path':         LaunchConfiguration('device_path'),
             'gripper_init_deg':    LaunchConfiguration('gripper_init_deg'),
+            'gripper_min_deg':     LaunchConfiguration('gripper_min_deg'),
+            'gripper_max_deg':     LaunchConfiguration('gripper_max_deg'),
+            'gripper_speed_dps':   LaunchConfiguration('gripper_speed_dps'),
+            'auto_gripper_limits_from_urdf': LaunchConfiguration('auto_gripper_limits_from_urdf'),
+            'publish_mycobot_gripper_value': LaunchConfiguration('publish_mycobot_gripper_value'),
+            'mycobot_gripper_value_topic': LaunchConfiguration('mycobot_gripper_value_topic'),
+            'mycobot_gripper_value_min': LaunchConfiguration('mycobot_gripper_value_min'),
+            'mycobot_gripper_value_max': LaunchConfiguration('mycobot_gripper_value_max'),
             'use_gripper_tip_ee':  LaunchConfiguration('use_gripper_tip_ee'),
             'joint_names_so101':   LaunchConfiguration('joint_names_so101'),
             'joint_names_mycobot': LaunchConfiguration('joint_names_mycobot'),
