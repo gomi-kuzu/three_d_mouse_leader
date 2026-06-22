@@ -239,7 +239,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'variable_damping',
             default_value='true',
-            description='可操作性に応じた可変ダンピングを使用 (false = 固定ダンピング)',
+            description='可操作度に応じた可変ダンピングを使用 (false = 固定ダンピング)',
         ),
         DeclareLaunchArgument(
             'damping_lambda',
@@ -249,7 +249,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'manipulability_threshold',
             default_value='0.04',
-            description='可変ダンピング開始閾値 w0 (可操作性がこれ以下になると λ が増大)',
+            description='可変ダンピング開始閾値 w0 (可操作度がこれ以下になると λ が増大)',
         ),
         DeclareLaunchArgument(
             'feedback_correction_enabled',

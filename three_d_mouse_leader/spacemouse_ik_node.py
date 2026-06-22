@@ -43,13 +43,13 @@ Parameters:
   singularity_avoidance (bool) : 特異点回避を有効にする (デフォルト: True)
                                True  = DLS (Damped Least Squares) 擬似逆行列を使用
                                False = 通常の擬似逆行列 (従来動作)
-  variable_damping   (bool)  : 可操作性に基づく可変ダンピングを使用 (singularity_avoidance=True 時)
-                               True  = 可操作性が低い時にダンピングを自動増大
+  variable_damping   (bool)  : 可操作度に基づく可変ダンピングを使用 (singularity_avoidance=True 時)
+                               True  = 可操作度が低い時にダンピングを自動増大
                                False = 固定ダンピング damping_lambda を使用
   damping_lambda     (float) : DLS ダンピング係数 (デフォルト: 0.05)
                                大きいほど特異点で安定するが、追従性能が低下する
   manipulability_threshold (float) : 可変ダンピング開始閾値 w0 (デフォルト: 0.04)
-                               可操作性 w がこの値を下回ると λ が増大し始める
+                               可操作度 w がこの値を下回ると λ が増大し始める
 
 """
 
@@ -665,7 +665,7 @@ class SpaceMouseIKNode(Node):
         self._buttons_lock = threading.Lock()
         self._gripper_value_last_sent: Optional[int] = None
         self._debug_frame_count: int = 0                  # デバッグ出力用カウンタ
-        self._manip_debug_count: int = 0                  # 可操作性デバッグ出力用カウンタ
+        self._manip_debug_count: int = 0                  # 可操作度デバッグ出力用カウンタ
         self._ik_timing_count: int = 0
         self._ik_timing_sum_ms: float = 0.0
         self._ik_timing_min_ms: float = float("inf")
@@ -765,7 +765,7 @@ class SpaceMouseIKNode(Node):
             J_w = _W_sqrt @ J_ctrl          # (6, n_ctrl)
 
             if self._singularity_avoidance:
-                # SVD ベースの可操作性。
+                # SVD ベースの可操作度。
                 # rank-deficient なモデルでも det ベースの常時 0 を回避し、
                 # 制御可能な特異値成分のみで評価する。
                 s = jnp.linalg.svd(J_w, compute_uv=False)
@@ -813,7 +813,7 @@ class SpaceMouseIKNode(Node):
             _, T_ee = self._robot.velocity_control_matrices(q_full)
             return T_ee
 
-        # 可操作性計算用 JIT 関数 (SVD ベース)
+        # 可操作度計算用 JIT 関数 (SVD ベース)
         @jax.jit
         def _compute_manipulability(q_full):
             J, _ = self._robot.velocity_control_matrices(q_full)
@@ -1246,7 +1246,7 @@ class SpaceMouseIKNode(Node):
                     )
                     near = w < self._manipulability_threshold
                     self.get_logger().info(
-                        f"[特異点回避] 可操作性 w={w:.4f} "
+                        f"[特異点回避] 可操作度 w={w:.4f} "
                         f"(閾値 w0={self._manipulability_threshold:.4f}, "
                         f"{'⚠ 特異点近傍' if near else '正常範囲'})"
                     )
