@@ -9,7 +9,7 @@
     <visual>
       <geometry>
 	     <!--- 0.0 0 -0.04  1.5708 3.14159-->
-       <mesh filename="package://three_d_mouse_leader/urdf/mycobot_280_m5/suit_env.dae"/>
+       <mesh filename="package://three_d_mouse_leader/meshes/mycobot_280_m5/suit_env.dae"/>
       </geometry>
       <origin xyz = "0 0 -0.02 " rpy = "1.5708 0 -1.5708"/>
     </visual>
