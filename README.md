@@ -2,7 +2,12 @@
 
 SpaceMouse (3D マウス) の 6 軸入力を手先速度指令に変換し、
 [frax](https://github.com/danielpmorton/frax) ライブラリを用いた**微分逆運動学 (Differential IK)** によって
-SO-ARM101 の 5 軸関節位置指令を生成し、ROS2 トピックに配信するパッケージです。
+ロボットの関節位置指令を生成し、ROS2 トピックに配信するパッケージです。
+
+現在は `robot_type` パラメータで次を切り替え可能です。
+
+- `so101` (既定): 既存の `/lekiwi/arm_joint_commands` 連携
+- `mycobot280`: `/mycobot/joint_commands` 連携 (`mycobot_jointstate_controller` 向け)
 
 ---
 
@@ -19,7 +24,7 @@ frax Manipulator
     - Jacobian J (6 × 5)
     - 特異点回避 OFF: qd = pinv(J) @ task_vel
     - 特異点回避 ON:  qd = J^T (J J^T + λ^2 I)^{-1} task_vel  [DLS]
-                     └ 可変ダンピング ON 時: λ は可操作性 w に応じて自動増減
+                     └ 可変ダンピング ON 時: λ は可操作度 w に応じて自動増減
     ↓ 関節速度指令 qd
     × dt → 積分 → 関節角 q (+ 関節リミットクランプ)
 ROS2 Publisher
@@ -73,6 +78,28 @@ source install/setup.bash
 ---
 
 ## 使用方法
+
+### robot_type の切り替え
+
+```bash
+# 既定 (SO-101)
+ros2 launch three_d_mouse_leader spacemouse_ik.launch.py robot_type:=so101
+
+# myCobot 280
+ros2 launch three_d_mouse_leader spacemouse_ik.launch.py \
+    robot_type:=mycobot280 \
+    urdf_path:=$ROS_HOME/src/three_d_mouse_leader/urdf/mycobot_280_m5/mycobot_280_m5.urdf \
+    init_joint_positions:="0,0,0,0,0,0"
+```
+
+`robot_type:=mycobot280` のときは、既定で以下を使用します。
+
+- feedback topic: `/mycobot/joint_states`
+- command topic: `/mycobot/joint_commands`
+- feedback unit: `rad`
+- command unit: `rad`
+- command joint names: `joint1..joint6`
+- IK 内部の URDF 関節名は `joint2_to_joint1..joint6output_to_joint6` を使用
 
 ### 基本的な起動
 
@@ -150,7 +177,7 @@ ros2 launch three_d_mouse_leader spacemouse_ik.launch.py \
 > **チューニングの目安:**
 > - `damping_lambda` を大きくするほど特異点付近が安定するが、速度の増幅率が低下します
 > - `manipulability_threshold` を大きくするほど特異点から遠い姿勢からダンピングが増大始まります
-> - 実験中はログ出力される可操作性値を見ながら調整してください
+> - 実験中はログ出力される可操作度値を見ながら調整してください
 
 ### グリッパーのボタン操作
 
@@ -202,11 +229,8 @@ ros2 run lekiwi_ros2_teleop lekiwi_teleop_node \
 ### 自由度不足の対処
 
 SO-ARM101 は 関節5軸 （グリッパー除く）ですが、SpaceMouse は 6 DoF 指令を出力します。  
-**疑似逆行列（Moore-Penrose pseudoinverse）**により最小二乗解を計算し、  
-実現可能な範囲で手先速度に追従します。
+そこで、疑似逆行列により最小二乗解を計算し、実現可能な範囲で手先速度に追従します。
 
-- 手先位置 (3 DoF) は比較的実現されやすい
-- 手先姿勢 (3 DoF) の一部は姿勢によって制約される
 - ロボットの姿勢・特異点により、一部の方向の速度が実現できない場合があります
 
 ### 特異点回避 (Damped Least Squares)
@@ -224,11 +248,11 @@ SO-ARM101 は 関節5軸 （グリッパー除く）ですが、SpaceMouse は 6
 |------|--------|------|
 | 通常の擬似逆行列 | $\dot{q} = J^+ \dot{x}$ | 特異点付近で関節速度が発散する可能性 |
 | DLS (固定ダンピング) | $\dot{q} =  (J^TJ + \lambda^2 I)^{-1} J^T \dot{x}$ | 常に一定のダンピングを加える |
-| DLS (可変ダンピング) | $\lambda$ を可操作性 $w$ に応じて自動調整 | 特異点付近のみダンピングを増大 |
+| DLS (可変ダンピング) | $\lambda$ を可操作度 $w$ に応じて自動調整 | 特異点付近のみダンピングを増大 |
 
-#### 可操作性 (Manipulability)
+#### 可操作度 (Manipulability)
 
-可操作性 $w$ はロボットが特異点にどれだけ近いかを示す指標:
+可操作度 $w$ はロボットが特異点にどれだけ近いかを示す指標:
 
 $$w = \sqrt{\det(JJ^T)}$$
 
@@ -238,7 +262,7 @@ $$w = \sqrt{\det(JJ^T)}$$
 
 #### 可変ダンピング
 
-可操作性 $w$ が閾値 $w_0$ を下回るとダンピング係数 $\lambda$ を自動的に大きくする:
+可操作度 $w$ が閾値 $w_0$ を下回るとダンピング係数 $\lambda$ を自動的に大きくする:
 
 $$\lambda(w) = \begin{cases} \lambda_{\max} \left(1 - \dfrac{w}{w_0}\right)^2 & (w < w_0) \\ 0 & (w \geq w_0) \end{cases}$$
 
@@ -248,11 +272,11 @@ $$\lambda(w) = \begin{cases} \lambda_{\max} \left(1 - \dfrac{w}{w_0}\right)^2 & 
 
 #### デバッグログ
 
-特異点回避が有効な場合、60 制御サイクルごとに可操作性をログ出力します:
+特異点回避が有効な場合、60 制御サイクルごとに可操作度をログ出力します:
 
 ```
-[特異点回避] 可操作性 w=0.0823 (閾値 w0=0.0400, 正常範囲)
-[特異点回避] 可操作性 w=0.0213 (閾値 w0=0.0400, ⚠ 特異点近傍)
+[特異点回避] 可操作度 w=0.0823 (閾値 w0=0.0400, 正常範囲)
+[特異点回避] 可操作度 w=0.0213 (閾値 w0=0.0400, ⚠ 特異点近傍)
 ```
 
 ---
@@ -278,9 +302,9 @@ $$\lambda(w) = \begin{cases} \lambda_{\max} \left(1 - \dfrac{w}{w_0}\right)^2 & 
 | `use_gripper_tip_ee`   | bool    | `true`                              | EE をグリッパ先端 (true) / 手首付け根 (false) に設定 |
 | `velocity_frame`       | string  | `"world"`                           | 速度指令の基準座標系: `"world"` または `"ee"` (**開発中**) |
 | `singularity_avoidance` | bool   | `true`                              | 特異点回避を有効にする (DLS 擬似逆行列を使用) |
-| `variable_damping`     | bool    | `true`                              | 可操作性に応じた可変ダンピングを使用 (false = 固定ダンピング) |
+| `variable_damping`     | bool    | `true`                              | 可操作度に応じた可変ダンピングを使用 (false = 固定ダンピング) |
 | `damping_lambda`       | float   | `0.05`                              | DLS ダンピング係数 λ (大きいほど特異点で安定、追従性低下) |
-| `manipulability_threshold` | float | `0.04`                           | 可変ダンピング開始閾値 w₀ (可操作性がこれ以下になると λ が増大) |
+| `manipulability_threshold` | float | `0.04`                           | 可変ダンピング開始閾値 w₀ (可操作度がこれ以下になると λ が増大) |
 | `enable_ee_sphere`     | bool    | `true`                              | Rviz に EE 位置の球マーカー (赤, φ20mm) を表示 |
 | `enable_ee_axes`       | bool    | `true`                              | Rviz に EE 姿勢の RGB 軸矢印 (X赤/Y緑/Z青, 50mm) を表示 |
 | `enable_trail`         | bool    | `false`                             | Rviz に手先軌跡を表示 |
