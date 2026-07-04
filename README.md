@@ -1,4 +1,14 @@
 # 3d_mouse_leader
+<table>
+  <tr>
+    <td width="50%">
+      <video src="./video/rviz_test.mp4" width="100%" autoplay loop muted playsinline></video>
+    </td>
+    <td width="50%">
+      <video src="./video/control_test.mp4" width="100%" autoplay loop muted playsinline></video>
+    </td>
+  </tr>
+</table>
 
 SpaceMouse (3D マウス) の 6 軸入力を手先速度指令に変換し、
 [frax](https://github.com/danielpmorton/frax) ライブラリを用いた**微分逆運動学 (Differential IK)** によって
