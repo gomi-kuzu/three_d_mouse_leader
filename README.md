@@ -2,10 +2,10 @@
 <table>
   <tr>
     <td width="50%">
-      <video src="https://github.com/gomi-kuzu/three_d_mouse_leader/blob/main/video/control_test.mp4" width=100%" autoplay loop muted playsinline></video>
+      <video src="https://github.com/user-attachments/assets/3f28b7be-232b-4948-a65a-d4ad960c435e" width=100%" autoplay loop muted playsinline></video>
     </td>
     <td width="50%">
-      <video src="https://github.com/gomi-kuzu/three_d_mouse_leader/blob/main/video/rviz_test.mp4" width="100%" autoplay loop muted playsinline></video>
+      <video src="https://github.com/user-attachments/assets/2a293a85-9b6c-40b7-9a6e-a15830996fdb" width="100%" autoplay loop muted playsinline></video>
     </td>
   </tr>
 </table>
