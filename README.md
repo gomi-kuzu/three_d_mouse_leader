@@ -2,10 +2,10 @@
 <table>
   <tr>
     <td width="50%">
-      <video src="video/rviz_test.mp4?raw=true" width=100%" autoplay loop muted playsinline></video>
+      <video src="https://github.com/gomi-kuzu/three_d_mouse_leader/blob/main/video/control_test.mp4" width=100%" autoplay loop muted playsinline></video>
     </td>
     <td width="50%">
-      <video src="video/control_test.mp4?raw=true" width="100%" autoplay loop muted playsinline></video>
+      <video src="https://github.com/gomi-kuzu/three_d_mouse_leader/blob/main/video/rviz_test.mp4" width="100%" autoplay loop muted playsinline></video>
     </td>
   </tr>
 </table>
