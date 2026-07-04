@@ -2,10 +2,10 @@
 <table>
   <tr>
     <td width="50%">
-      <video src="./video/rviz_test.mp4?raw=true" width=100%" autoplay loop muted playsinline></video>
+      <video src="video/rviz_test.mp4?raw=true" width=100%" autoplay loop muted playsinline></video>
     </td>
     <td width="50%">
-      <video src="./video/control_test.mp4?raw=true" width="100%" autoplay loop muted playsinline></video>
+      <video src="video/control_test.mp4?raw=true" width="100%" autoplay loop muted playsinline></video>
     </td>
   </tr>
 </table>
